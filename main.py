@@ -1,0 +1,322 @@
+import sys
+import os
+import time
+import threading
+import json
+from PyQt6.QtWidgets import (QApplication, QFileDialog) 
+from src.ui.main_window import LauncherWindow, QColor
+from src.core.drive_logic import DriveManager
+
+# Aliases de colores para que el código de abajo no rompa
+COLOR_ACENTO = "#0AC8B9" 
+COLOR_EXITO = "#30D158"
+
+class Controller:
+    def __init__(self):
+        # 1. Iniciar App PyQt
+        self.app = QApplication(sys.argv)
+        
+        self.logic = DriveManager()
+        
+        # 2. Instanciar Ventana (Sin pasar callbacks todavía)
+        self.gui = LauncherWindow()
+        
+        # 3. Conectar Señales (Eventos)
+        self.gui.sig_sync.connect(self.handle_sync)
+        self.gui.sig_play.connect(self.handle_play)
+        self.gui.sig_config.connect(self.handle_config)
+        
+        # New Selection Signals
+        self.gui.sig_confirm_download.connect(self.start_download)
+        self.gui.sig_cancel_selection.connect(self.cancel_selection)
+        self.gui.sig_cancel_selection.connect(self.cancel_selection)
+        self.gui.sig_open_library.connect(self.open_local_library)
+        self.gui.sig_go_home.connect(self.handle_go_home)
+        
+        self.pending_results = False # Track if we have pending songs to sync
+        
+        # Mostrar ventana
+        self.gui.show()
+        
+        self.setup_initial_state()
+        
+        # 4. Iniciar Loop
+        sys.exit(self.app.exec())
+
+    def setup_initial_state(self):
+        self.gui.log("Sistema iniciando...")
+        rs = self.logic.obtener_config('ruta_songs')
+        re = self.logic.obtener_config('ruta_exe')
+        
+        if not rs or not re:
+            det = self.logic.adivinar_rutas_iniciales()
+            if not rs and 'ruta_songs' in det: 
+                self.logic.guardar_config('ruta_songs', det['ruta_songs'])
+                rs = det['ruta_songs']
+            if not re and 'ruta_exe' in det: 
+                self.logic.guardar_config('ruta_exe', det['ruta_exe'])
+                re = det['ruta_exe']
+        
+        if rs: self.gui.log(f"Ruta Songs: {rs}")
+        if re: 
+            self.gui.log(f"Juego hallado: {re}")
+            self.gui.set_status("LISTO PARA JUGAR", "Todo configurado correctamente.", COLOR_EXITO)
+        else: 
+            self.gui.set_status("CONFIGURACIÓN PENDIENTE", "Falta seleccionar la carpeta Songs o el Juego.", COLOR_ACENTO)
+
+    def handle_sync(self):
+        rs = self.logic.obtener_config('ruta_songs')
+        if not rs:
+            self.gui.log("! Primero configura la carpeta Songs.")
+            return
+        self.gui.set_sync_enabled(False)
+        self.gui.set_status("ESCANEANDO...", "Analizando diferencias...", COLOR_ACENTO)
+        threading.Thread(target=self.scan_worker, args=(rs,), daemon=True).start()
+
+    def scan_worker(self, rs):
+        try:
+            service = self.logic.obtener_servicio()
+            
+            # --- PASO 1: Actualizar lista maestra ---
+            self.gui.log("Buscando actualizaciones de la lista...")
+            if self.logic.actualizar_master(service):
+                self.gui.log("✓ Lista de canciones actualizada.")
+            else:
+                self.gui.log("! Usando lista local.")
+
+            # --- PASO 2: Cargar lista ---
+            if not os.path.exists("data/master_songs.json"):
+                self.gui.log("ERR: No hay lista de canciones.")
+                self.gui.set_status("ERROR DE LISTA", "No se encontró master_songs.json", COLOR_ACENTO)
+                self.gui.set_sync_enabled(True)
+                return
+
+            with open("data/master_songs.json", "r", encoding="utf-8") as f:
+                servidor = json.load(f)["archivos"]
+            
+            # --- PASO 3: Identificar archivos a descargar (Turbo Mode) ---
+            descargas_pendientes = {}
+            self.gui.log(f"Verificando {len(servidor)} archivos...")
+            self.gui.set_status("VERIFICANDO", f"Analizando {len(servidor)} archivos...")
+            
+            local_cache = self.logic.load_cache()
+            cache_updated = False
+            total_archivos = len(servidor)
+            start_time = time.time()
+            
+            for idx, item in enumerate(servidor):
+                # Update status
+                if idx % 50 == 0:
+                   porcentaje = int((idx / total_archivos) * 100)
+                   self.gui.set_status("VERIFICANDO", f"{porcentaje}% completado...")
+                   self.gui.set_progress((idx + 1) / total_archivos)
+
+                ruta_relativa = item['ruta_relativa'].replace('\\', '/')
+                ruta_final = os.path.join(rs, ruta_relativa, item['nombre'])
+                
+                descargar = False
+                
+                # Check Local Existence
+                item['local_exists'] = os.path.exists(ruta_final) # Flag for UI
+                
+                if not item['local_exists']:
+                    descargar = True
+                else:
+                    size_local = os.path.getsize(ruta_final)
+                    size_remoto = int(item.get('tamano', 0))
+                    
+                    if size_local != size_remoto:
+                         self.gui.log(f"CAMBIO TAMAÑO: {item['nombre']}")
+                         descargar = True
+                    else:
+                        md5_local = self.logic.get_file_hash(ruta_final, cache=local_cache)
+                        cache_updated = True
+                        md5_remoto = item.get('hash')
+                        if md5_remoto and md5_local != md5_remoto:
+                            descargar = True
+                
+                if descargar:
+                    # Enriched item for download
+                    item['ruta_final'] = ruta_final 
+                    # Ensure id_drive is present
+                    if 'id_drive' not in item:
+                         item['id_drive'] = item.get('id')
+                    
+                    # GROUPING LOGIC
+                    # Usamos ruta_relativa como identificador de la canción
+                    group_key = item['ruta_relativa']
+                    if group_key not in descargas_pendientes:
+                        descargas_pendientes[group_key] = []
+                    descargas_pendientes[group_key].append(item)
+            
+            if cache_updated:
+                self.logic.save_cache(local_cache)
+
+            # --- PASO 4: Decisión ---
+            self.gui.set_progress(1)
+            
+            if not descargas_pendientes:
+                self.gui.log("✓ Todo al día.")
+                self.gui.set_status("SISTEMA SINCRONIZADO", "Tu colección está al día. ¡A jugar!", COLOR_EXITO)
+                self.gui.set_sync_enabled(True)
+            else:
+                count_songs = len(descargas_pendientes)
+                # Count total files for log
+                count_files = sum(len(v) for v in descargas_pendientes.values())
+                
+                self.gui.log(f"Se encontraron {count_songs} canciones ({count_files} archivos) para actualizar.")
+                
+                # Convert dict to list for UI
+                # Format: [{'name': 'Song Name', 'files': [item1, item2], 'status': 'UPDATE'}]
+                ui_data = []
+                for folder_path, files in descargas_pendientes.items():
+                    # Folder path usually is "Artist\Album\Song" or just "Song"
+                    # Let's take the last part as name for display
+                    display_name = folder_path.replace('\\', '/').split('/')[-1]
+                    if not display_name: display_name = folder_path # Fallback
+
+                    # Determine status (if any file is new vs all update)
+                    # Simple rule: if folder exists locally, it's UPDATE, else NEW
+                    local_song_path = os.path.join(rs, folder_path)
+                    status = "UPDATE" if os.path.exists(local_song_path) else "NUEVA"
+                    
+                    ui_data.append({
+                        'name': display_name,
+                        'full_path': folder_path,
+                        'files': files,
+                        'status': status
+                    })
+                
+                # TRIGGER SELECTION UI (Main Thread)
+                self.pending_results = True # Mark as results pending
+                self.gui.show_selection(ui_data)
+                # Note: We DON'T enable sync button yet, user is in selection mode
+
+        except Exception as e: 
+            self.gui.log(f"ERROR GLOBAL: {e}")
+            self.gui.set_status("ERROR CRÍTICO", str(e), COLOR_ACENTO)
+            self.gui.set_sync_enabled(True)
+            import traceback
+            traceback.print_exc()
+
+    def start_download(self, selected_songs):
+        self.gui.log(f"Iniciando descarga de {len(selected_songs)} elementos...")
+        self.gui.set_status("INICIANDO DESCARGA", "Preparando...", COLOR_ACENTO)
+        
+        # 1. Update UI Feedback
+        self.gui.set_selection_downloading_state(True)
+        self.gui.show_songs_alert(False) # Hide alert if we are downloading
+        self.pending_results = False 
+        
+        threading.Thread(target=self.download_worker, args=(selected_songs,), daemon=True).start()
+
+    def cancel_selection(self):
+        self.gui.show_home()
+        self.gui.set_status("CANCELADO", "Sincronización cancelada por usuario.", COLOR_ACENTO)
+        self.gui.set_sync_enabled(True)
+        if self.pending_results:
+            self.gui.show_songs_alert(True) # Show the ⚠️ icon
+
+    def download_worker(self, descargas_pendientes):
+        try:
+            service = self.logic.obtener_servicio()
+            
+            self.gui.set_status("DESCARGANDO", f"Actualizando {len(descargas_pendientes)} archivos...")
+            self.gui.set_progress(0) 
+            
+            start_dl = time.time()
+            total_dl = len(descargas_pendientes)
+            
+            for i, archivo in enumerate(descargas_pendientes):
+                nombre = archivo['nombre']
+                
+                # ETA Calc
+                elapsed = time.time() - start_dl
+                if i > 0:
+                    vel = i / elapsed
+                    restantes = total_dl - i
+                    eta = int(restantes / vel)
+                    mins, segs = divmod(eta, 60)
+                    eta_txt = f"{mins}m {segs}s"
+                else:
+                    eta_txt = "..."
+                
+                self.gui.set_status("DESCARGANDO", f"[{i+1}/{total_dl}] {nombre} - Falta: {eta_txt}")
+                
+                try:
+                    self.logic.descargar_archivo(service, archivo['id_drive'], archivo['ruta_final'])
+                    self.gui.log(f"OK: {nombre}")
+                except Exception as e:
+                    self.gui.log(f"ERR {nombre}: {e}")
+                
+                self.gui.set_progress((i + 1) / total_dl)
+
+            self.gui.set_status("PROCESO TERMINADO", f"Se descargaron {len(descargas_pendientes)} archivos.", COLOR_EXITO)
+            
+            # Al finalizar, volver al Home
+            time.sleep(1)
+            self.gui.show_home()
+
+        except Exception as e:
+            self.gui.log(f"Error Descarga: {e}")
+        finally:
+            self.gui.set_sync_enabled(True)
+
+    def handle_play(self):
+        exe = self.logic.obtener_config('ruta_exe')
+        if not exe or not os.path.exists(exe):
+            self.gui.log("Excutable no configurado. Buscando...")
+            exe = QFileDialog.getOpenFileName(self.gui, "Buscar Clone Hero.exe", filter="Ejecutables (*.exe)")[0]
+            if exe:
+                self.logic.guardar_config('ruta_exe', exe)
+        
+        if exe and os.path.exists(exe):
+            self.gui.set_status("LANZANDO...", "Buen juego!")
+            os.startfile(exe)
+            
+            # Auto-close after 3 seconds
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(3000, self.app.quit) # app.quit is safer for controller closure
+        else:
+            self.gui.log("Error: No se encuentra el juego.")
+
+    def handle_config(self):
+        # Usamos dialogo nativo de Qt
+        new_path = QFileDialog.getExistingDirectory(self.gui, "Seleccionar Carpeta Songs")
+        if new_path:
+            self.logic.guardar_config('ruta_songs', new_path)
+            self.gui.log(f"Ruta cambiada: {new_path}")
+            self.setup_initial_state()
+
+    def open_local_library(self):
+        songs_path = self.logic.obtener_config('ruta_songs')
+        if not songs_path or not os.path.exists(songs_path):
+            self.gui.log("No se ha configurado la ruta de canciones.")
+            self.gui.show_library_page() # Show empty
+            return
+
+        try:
+            # Simple list of directories
+            songs = [d for d in os.listdir(songs_path) if os.path.isdir(os.path.join(songs_path, d))]
+            songs.sort()
+            self.gui.populate_library_table(songs)
+            self.gui.show_library_page()
+            self.gui.log(f"Biblioteca cargada: {len(songs)} canciones.")
+        except Exception as e:
+            self.gui.log(f"Error cargando biblioteca: {e}")
+            self.gui.show_library_page()
+            
+            self.gui.show_library_page()
+            
+    def handle_go_home(self):
+        # Reset any active/pending states
+        self.gui.set_sync_enabled(True)
+        self.gui.set_status("ONLINE", "Esperando...", COLOR_ACENTO)
+        self.gui.show_home()
+
+    def adivinar_rutas_iniciales(self):
+        # Esta logica estaba en drive_logic, aquí solo manejamos UI si hace falta
+        pass 
+
+if __name__ == "__main__":
+    Controller()

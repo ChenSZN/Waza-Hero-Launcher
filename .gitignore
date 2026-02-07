@@ -1,0 +1,26 @@
+# .gitignore para Clone Hero Sync Launcher
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+build/
+dist/
+*.spec
+
+# Config y Datos (Persistencia Local)
+config/
+data/
+*.json
+!credentials.json.example
+
+# Credentials (ARCHIVO SENSIBLE - NUNCA SUBIR)
+credentials.json
+
+# IDEs
+.vscode/
+.idea/
+
+# Assets locales (opcional, si son muy pesados)
+# assets/
