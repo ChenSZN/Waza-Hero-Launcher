@@ -11,7 +11,7 @@ import webbrowser
 from src.utils.resource_utils import resource_path
 
 # --- GLOBAL VERSION ---
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # --- ESTILOS QSS (CSS para escritorio) ---
 STYLESHEET = """
@@ -874,7 +874,7 @@ class LauncherWindow(QMainWindow):
 
         # --- Table ---
         self.table_library = QTableWidget(parent)
-        self.table_library.setGeometry(50, 140, 1000, 420) # Moved up + Increased Height
+        self.table_library.setGeometry(50, 130, 1000, 400) # Maximizado lo alto
         self.table_library.setColumnCount(2)
         self.table_library.setHorizontalHeaderLabels(["Nombre de Canción / Carpeta", "Estado"])
         self.table_library.verticalHeader().setVisible(False)
@@ -901,32 +901,47 @@ class LauncherWindow(QMainWindow):
         self.lbl_library_summary.move(850, 100)
         self.lbl_library_summary.resize(200, 20)
 
-    def populate_library_table(self, songs_list):
+    def populate_library_table(self, songs_metadata):
         self.table_library.setRowCount(0)
-        for song_name in songs_list:
+        self.table_library.setSortingEnabled(False)
+        
+        for meta in songs_metadata:
             row = self.table_library.rowCount()
             self.table_library.insertRow(row)
             
+            artist = meta.get('artist', '')
+            name = meta.get('name', meta.get('folder', 'Unknown'))
+            display_text = f"🎵 {artist} - {name}" if artist else f"🎵 {name}"
+            
             # Name
-            item_name = QTableWidgetItem(f"🎵 {song_name}")
+            item_name = QTableWidgetItem(display_text)
+            item_name.setData(Qt.ItemDataRole.UserRole, meta) # Store full meta
             self.table_library.setItem(row, 0, item_name)
             
-            # Status (Assuming installed if listed)
+            # Status
             item_status = QTableWidgetItem("Instalado")
             item_status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_status.setForeground(QColor("#0AC8B9"))
             self.table_library.setItem(row, 1, item_status)
-        
-        self.lbl_library_summary.setText(f"Total: {len(songs_list)} canciones")
+            
+        self.lbl_library_summary.setText(f"Total: {len(songs_metadata)} canciones")
+        self.table_library.setSortingEnabled(True)
 
     def filter_library_table(self, text):
         text = text.lower()
         for i in range(self.table_library.rowCount()):
-            item = self.table_library.item(i, 0) # Name column
-            if item and text in item.text().lower():
-                self.table_library.setRowHidden(i, False)
-            else:
-                self.table_library.setRowHidden(i, True)
+            item = self.table_library.item(i, 0)
+            meta = item.data(Qt.ItemDataRole.UserRole)
+            
+            visible = False
+            if meta and isinstance(meta, dict):
+                search_blob = f"{meta.get('artist','')} {meta.get('name','')} {meta.get('folder','')}".lower()
+                if text in search_blob:
+                    visible = True
+            elif item and text in item.text().lower():
+                visible = True
+                
+            self.table_library.setRowHidden(i, not visible)
 
     def _setup_about_page(self, parent):
         # About Info
@@ -982,6 +997,14 @@ class LauncherWindow(QMainWindow):
         else:
             self.frm_header.show()
 
+        # Alerta de actualización: Solo en la pantalla principal (Index 0)
+        if hasattr(self, 'frm_update'):
+            if index == 0 and getattr(self, 'update_url', ""):
+                self.frm_update.show()
+                self.frm_update.raise_()
+            else:
+                self.frm_update.hide()
+
     def _slot_show_home(self):
         self.stack.setCurrentIndex(0) # Show Home Page
 
@@ -1005,11 +1028,12 @@ class LauncherWindow(QMainWindow):
             self.pbar_selection.setValue(int(val * 100))
 
     def _slot_log(self, msg):
-        self.console.append(msg)
+        self.log(msg)
 
     def _setup_update_banner(self, parent):
         self.frm_update = QFrame(parent)
-        self.frm_update.setGeometry(200, 10, 700, 45)
+                                    #X,Y,W,H
+        self.frm_update.setGeometry(58, 63, 500, 45)
         self.frm_update.setObjectName("GlassPanel")
         self.frm_update.setStyleSheet("""
             QFrame#GlassPanel {
@@ -1065,8 +1089,6 @@ class LauncherWindow(QMainWindow):
         anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
         anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
         self._update_anim = anim # Keep ref
-        ver_bar = self.console.verticalScrollBar()
-        ver_bar.setValue(ver_bar.maximum())
 
     def _slot_enable_sync(self, enabled):
         self.btn_sync.setEnabled(enabled)

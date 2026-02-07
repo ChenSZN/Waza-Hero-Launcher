@@ -11,6 +11,8 @@ from src.core.drive_logic import DriveManager
 COLOR_ACENTO = "#0AC8B9" 
 COLOR_EXITO = "#30D158"
 
+CACHED_LIBRARY_FILE = 'data/library_cache.json'
+
 class Controller:
     def __init__(self):
         # 1. Iniciar App PyQt
@@ -301,24 +303,88 @@ class Controller:
             self.gui.log(f"Ruta cambiada: {new_path}")
             self.setup_initial_state()
 
+    def parse_song_ini(self, folder_path):
+        import configparser
+        ini_path = os.path.join(folder_path, "song.ini")
+        # Default if no ini or error
+        folder_name = os.path.basename(folder_path)
+        metadata = {"artist": "", "name": folder_name, "folder": folder_name}
+        
+        if os.path.exists(ini_path):
+            try:
+                config = configparser.ConfigParser(interpolation=None, strict=False)
+                # Some .ini files don't have [song] header or use other names, try to be flexible
+                with open(ini_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    if "[song" not in content.lower():
+                        content = "[song]\n" + content
+                
+                config.read_string(content)
+                section = 'song' if config.has_section('song') else config.sections()[0] if config.sections() else None
+                if section:
+                    metadata["artist"] = config.get(section, 'artist', fallback="")
+                    metadata["name"] = config.get(section, 'name', fallback=folder_name)
+            except: pass
+            
+        return metadata
+
     def open_local_library(self):
         songs_path = self.logic.obtener_config('ruta_songs')
         if not songs_path or not os.path.exists(songs_path):
             self.gui.log("No se ha configurado la ruta de canciones.")
-            self.gui.show_library_page() # Show empty
+            self.gui.show_library_page()
             return
 
         try:
-            # Simple list of directories
-            songs = [d for d in os.listdir(songs_path) if os.path.isdir(os.path.join(songs_path, d))]
-            songs.sort()
-            self.gui.populate_library_table(songs)
+            # 1. Load Cache if exists
+            cached_data = {}
+            if os.path.exists(CACHED_LIBRARY_FILE):
+                with open(CACHED_LIBRARY_FILE, 'r') as f:
+                    cached_data = json.load(f)
+
+            # 2. Get current folders
+            folders = [d for d in os.listdir(songs_path) if os.path.isdir(os.path.join(songs_path, d))]
+            folders.sort()
+            
+            final_library = []
+            new_cache = {}
+            updated_cache = False
+
+            # 3. Process each folder (with cache)
+            for folder in folders:
+                folder_path = os.path.join(songs_path, folder)
+                # Use mtime to detect changes
+                try: mtime = os.path.getmtime(folder_path)
+                except: mtime = 0
+
+                cache_key = folder
+                if cache_key in cached_data and cached_data[cache_key].get('mtime') == mtime:
+                    final_library.append(cached_data[cache_key])
+                    new_cache[cache_key] = cached_data[cache_key]
+                else:
+                    # Parse real metadata
+                    meta = self.parse_song_ini(folder_path)
+                    meta['mtime'] = mtime
+                    final_library.append(meta)
+                    new_cache[cache_key] = meta
+                    updated_cache = True
+
+            # 4. Save cache if updated
+            if updated_cache or len(new_cache) != len(cached_data):
+                os.makedirs(os.path.dirname(CACHED_LIBRARY_FILE), exist_ok=True)
+                with open(CACHED_LIBRARY_FILE, 'w') as f:
+                    json.dump(new_cache, f, indent=4)
+
+            # 5. Populate UI
+            # We sort by Artist - Name for better UX
+            final_library.sort(key=lambda x: (x['artist'].lower(), x['name'].lower()))
+            
+            self.gui.populate_library_table(final_library)
             self.gui.show_library_page()
-            self.gui.log(f"Biblioteca cargada: {len(songs)} canciones.")
+            self.gui.log(f"Biblioteca cargada: {len(final_library)} canciones.")
+            
         except Exception as e:
             self.gui.log(f"Error cargando biblioteca: {e}")
-            self.gui.show_library_page()
-            
             self.gui.show_library_page()
             
     def handle_go_home(self):
