@@ -3,11 +3,12 @@ import os
 import time
 import threading
 import json
+import ctypes
 from PyQt6.QtWidgets import (QApplication, QFileDialog) 
+from PyQt6.QtGui import QIcon
 from src.ui.main_window import LauncherWindow, QColor, VERSION
 from src.core.drive_logic import DriveManager
 
-# Aliases de colores para que el código de abajo no rompa
 COLOR_ACENTO = "#0AC8B9" 
 COLOR_EXITO = "#30D158"
 
@@ -15,38 +16,58 @@ CACHED_LIBRARY_FILE = 'data/library_cache.json'
 
 class Controller:
     def __init__(self):
-        # 1. Iniciar App PyQt
+        # Fix taskbar icon on Windows
+        try:
+            myappid = u'chenszen.wazahero.launcher.1.3.1' # arbitrary string
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except:
+            pass
+
+        #Iniciar App PyQt
         self.app = QApplication(sys.argv)
         
+        # Set App Icon
+        from src.utils.resource_utils import resource_path
+        icon_path = resource_path("assets/WAZAHEROICON.ico")
+        if os.path.exists(icon_path):
+            self.app.setWindowIcon(QIcon(icon_path))
+
         self.logic = DriveManager()
         
-        # 2. Instanciar Ventana (Sin pasar callbacks todavía)
+        #Instanciar Ventana
         self.gui = LauncherWindow()
         
-        # 3. Conectar Señales (Eventos)
+        #(Eventos)
         self.gui.sig_sync.connect(self.handle_sync)
         self.gui.sig_play.connect(self.handle_play)
         self.gui.sig_config.connect(self.handle_config)
         
-        # New Selection Signals
+        #New Selection Signals
         self.gui.sig_confirm_download.connect(self.start_download)
         self.gui.sig_cancel_selection.connect(self.cancel_selection)
         self.gui.sig_cancel_selection.connect(self.cancel_selection)
         self.gui.sig_open_library.connect(self.open_local_library)
         self.gui.sig_go_home.connect(self.handle_go_home)
         
-        self.pending_results = False # Track if we have pending songs to sync
+        self.pending_results = False # track if  pending songs to sync
         
         # Mostrar ventana
         self.gui.show()
         
         self.setup_initial_state()
         
-        # 4. Iniciar Loop
+        #Loop
         sys.exit(self.app.exec())
 
     def setup_initial_state(self):
         self.gui.log("Sistema iniciando...")
+        
+        # Check credentials
+        from src.core.drive_logic import CREDENTIALS_DATA
+        if not CREDENTIALS_DATA:
+            self.gui.log("CRÍTICO: No se encontraron credenciales (credentials.json).")
+            self.gui.set_status("ERROR DE ACCESO", "Falta credentials.json", COLOR_ACENTO)
+        
         rs = self.logic.obtener_config('ruta_songs')
         re = self.logic.obtener_config('ruta_exe')
         
@@ -66,7 +87,7 @@ class Controller:
         else: 
             self.gui.set_status("CONFIGURACIÓN PENDIENTE", "Falta seleccionar la carpeta Songs o el Juego.", COLOR_ACENTO)
 
-        # 5. Check for updates in background
+        # Check for updates in background
         threading.Thread(target=self.check_for_updates, daemon=True).start()
 
     def check_for_updates(self):
@@ -94,10 +115,14 @@ class Controller:
             
             # --- PASO 1: Actualizar lista maestra ---
             self.gui.log("Buscando actualizaciones de la lista...")
-            if self.logic.actualizar_master(service):
-                self.gui.log("✓ Lista de canciones actualizada.")
-            else:
-                self.gui.log("! Usando lista local.")
+            try:
+                if self.logic.actualizar_master(service):
+                    self.gui.log("✓ Lista de canciones actualizada.")
+                else:
+                    self.gui.log("! No se encontró master_songs.json en Drive.")
+            except Exception as e:
+                self.gui.log(f"Error actualizando lista: {e}")
+                self.gui.log("! Usando lista local (si existe).")
 
             # --- PASO 2: Cargar lista ---
             if not os.path.exists("data/master_songs.json"):
