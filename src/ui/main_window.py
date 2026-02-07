@@ -10,6 +10,9 @@ import os
 import webbrowser
 from src.utils.resource_utils import resource_path
 
+# --- GLOBAL VERSION ---
+VERSION = "1.1.0"
+
 # --- ESTILOS QSS (CSS para escritorio) ---
 STYLESHEET = """
 QMainWindow {
@@ -931,8 +934,8 @@ class LauncherWindow(QMainWindow):
         txt_info.setReadOnly(True)
         txt_info.setGeometry(50, 120, 600, 400)
         txt_info.setStyleSheet("background: transparent; border: none; color: #ddd; font-family: 'Segoe UI'; font-size: 14px;")
-        txt_info.setHtml("""
-            <h1>Versión 1.0</h1>
+        txt_info.setHtml(f"""
+            <h1>Versión {VERSION}</h1>
             <p>Desarrollado para toda la <b>Wazisa</b>.</p>
             <p>Este launcher permite sincronizar automáticamente tus charts con Google Drive.</p>
             <br>
