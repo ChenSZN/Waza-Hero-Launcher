@@ -180,6 +180,7 @@ class LauncherWindow(QMainWindow):
     sig_cancel_selection = pyqtSignal()
     sig_open_library = pyqtSignal() # Request to open library
     sig_go_home = pyqtSignal() # Request to go home (cleanup)
+    sig_update_available = pyqtSignal(str, str) # version, url
 
     # Thread-Safe Signals
     _sig_status = pyqtSignal(str, str, str)
@@ -201,6 +202,7 @@ class LauncherWindow(QMainWindow):
         self._sig_enable_sync.connect(self._slot_enable_sync)
         self._sig_show_selection.connect(self._slot_show_selection)
         self._sig_show_home.connect(self._slot_show_home)
+        self.sig_update_available.connect(self.show_update_notification)
         
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -460,6 +462,9 @@ class LauncherWindow(QMainWindow):
         self.page_about = QWidget()
         self._setup_about_page(self.page_about)
         self.stack.addWidget(self.page_about)
+
+        # --- Update Banner (At the end to be on top) ---
+        self._setup_update_banner(self.central_widget)
         
         self.stack.setCurrentIndex(0)
         self.stack.currentChanged.connect(self.on_page_changed)
@@ -1001,6 +1006,65 @@ class LauncherWindow(QMainWindow):
 
     def _slot_log(self, msg):
         self.console.append(msg)
+
+    def _setup_update_banner(self, parent):
+        self.frm_update = QFrame(parent)
+        self.frm_update.setGeometry(200, 10, 700, 45)
+        self.frm_update.setObjectName("GlassPanel")
+        self.frm_update.setStyleSheet("""
+            QFrame#GlassPanel {
+                background-color: rgba(200, 170, 110, 40);
+                border: 1px solid #C8AA6E;
+                border-radius: 22px;
+            }
+        """)
+        self.frm_update.hide()
+
+        lyt = QHBoxLayout(self.frm_update)
+        lyt.setContentsMargins(20, 0, 10, 0)
+
+        self.lbl_update_text = QLabel("✨ ¡Nueva actualización disponible!", self.frm_update)
+        self.lbl_update_text.setStyleSheet("color: #F0E6D2; font-weight: bold; border: none; background: transparent;")
+        lyt.addWidget(self.lbl_update_text)
+
+        lyt.addStretch()
+
+        self.btn_get_update = QPushButton("DESCARGAR AHORA", self.frm_update)
+        self.btn_get_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_get_update.setStyleSheet("""
+            QPushButton {
+                background-color: #C8AA6E;
+                color: #111;
+                font-weight: bold;
+                border-radius: 12px;
+                padding: 5px 15px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: #F0E6D2; }
+        """)
+        self.update_url = ""
+        self.btn_get_update.clicked.connect(self.on_update_clicked)
+        lyt.addWidget(self.btn_get_update)
+
+    def on_update_clicked(self):
+        if self.update_url:
+            webbrowser.open(self.update_url)
+
+    def show_update_notification(self, version, url):
+        self.update_url = url
+        self.lbl_update_text.setText(f"✨ ¡Versión {version} disponible! Hay mejoras listas.")
+        self.frm_update.show()
+        # Simple animation
+        self.frm_update.raise_()
+        eff = QGraphicsOpacityEffect(self.frm_update)
+        self.frm_update.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity")
+        anim.setDuration(1000)
+        anim.setStartValue(0)
+        anim.setEndValue(1)
+        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+        self._update_anim = anim # Keep ref
         ver_bar = self.console.verticalScrollBar()
         ver_bar.setValue(ver_bar.maximum())
 

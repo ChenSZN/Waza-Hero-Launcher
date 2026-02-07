@@ -126,6 +126,28 @@ class DriveManager:
             print(f"Error actualizando master: {e}")
         return False
 
+    def obtener_version_remota(self, service):
+        """Busca 'version.json' en Drive y devuelve su contenido."""
+        try:
+            query = f"'{ID_CARPETA_MAESTRA}' in parents and name = 'version.json' and trashed = false"
+            results = service.files().list(q=query, fields="files(id, name)").execute()
+            items = results.get('files', [])
+            if items:
+                file_id = items[0]['id']
+                # Descargar en memoria
+                request = service.files().get_media(fileId=file_id)
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                
+                fh.seek(0)
+                return json.loads(fh.read().decode('utf-8'))
+        except Exception as e:
+            print(f"Error obteniendo version remota: {e}")
+        return None
+
     def adivinar_rutas_iniciales(self):
         """Intenta detectar Songs y el EXE si no hay config."""
         rutas_detectadas = {}

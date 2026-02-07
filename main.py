@@ -4,7 +4,7 @@ import time
 import threading
 import json
 from PyQt6.QtWidgets import (QApplication, QFileDialog) 
-from src.ui.main_window import LauncherWindow, QColor
+from src.ui.main_window import LauncherWindow, QColor, VERSION
 from src.core.drive_logic import DriveManager
 
 # Aliases de colores para que el código de abajo no rompa
@@ -63,6 +63,19 @@ class Controller:
             self.gui.set_status("LISTO PARA JUGAR", "Todo configurado correctamente.", COLOR_EXITO)
         else: 
             self.gui.set_status("CONFIGURACIÓN PENDIENTE", "Falta seleccionar la carpeta Songs o el Juego.", COLOR_ACENTO)
+
+        # 5. Check for updates in background
+        threading.Thread(target=self.check_for_updates, daemon=True).start()
+
+    def check_for_updates(self):
+        try:
+            service = self.logic.obtener_servicio()
+            remote_data = self.logic.obtener_version_remota(service)
+            if remote_data and 'version' in remote_data:
+                remote_version = remote_data['version']
+                if remote_version != VERSION: # Simplistic: any difference triggers alert
+                    self.gui.sig_update_available.emit(remote_version, remote_data.get('url', ''))
+        except: pass # Don't crash if check fails
 
     def handle_sync(self):
         rs = self.logic.obtener_config('ruta_songs')
