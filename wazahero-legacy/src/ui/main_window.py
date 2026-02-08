@@ -5,13 +5,14 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QLabel, QPushButton,
                               QStackedWidget, QTableWidget, QTableWidgetItem, 
                               QHeaderView, QAbstractItemView, QCheckBox, QLineEdit,
                               QVBoxLayout, QHBoxLayout, QSpacerItem, QSizePolicy,
-                              QGraphicsOpacityEffect)
+                              QGraphicsOpacityEffect, QGraphicsDropShadowEffect)
 import os
 import webbrowser
+import random
 from src.utils.resource_utils import resource_path
 
 # --- GLOBAL VERSION ---
-VERSION = "1.3.1"
+VERSION = "1.3.14"
 
 # --- ESTILOS QSS (CSS para escritorio) ---
 STYLESHEET = """
@@ -118,21 +119,73 @@ QLabel#HeroSub {
 }
 
 /* Play Button (The Star) */
-QPushButton#PlayBtn {
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00dcd7, stop:1 #00b4b0);
+/* Base for all Premium Pills */
+QPushButton#PlayBtn, QPushButton#SecondaryBtn, QPushButton#CancelBtn {
     color: #010A13;
     font-family: "Segoe UI";
-    font-size: 16px;
+    font-size: 14px;
     font-weight: bold;
-    border-radius: 27px; /* Pill shape */
+    border-radius: 25px;
     border: 2px solid #C8AA6E;
+    letter-spacing: 1px;
+}
+
+/* Specific Colors */
+QPushButton#PlayBtn {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00dcd7, stop:1 #00b4b0);
 }
 QPushButton#PlayBtn:hover {
     background-color: #aafffe;
     border-color: #fff;
 }
-QPushButton#PlayBtn:pressed {
-    background-color: #008885;
+
+QPushButton#SecondaryBtn {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1e3c72, stop:1 #2a5298);
+    color: #FFFFFF; /* Blue looks better with white text */
+}
+QPushButton#SecondaryBtn:hover {
+    background-color: #3b5998;
+    border-color: #fff;
+}
+
+QPushButton#CancelBtn {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #cb2d3e, stop:1 #ef473a);
+    color: #FFFFFF; /* Red/Orange looks better with white text */
+}
+QPushButton#CancelBtn:hover {
+    background-color: #ff5555;
+    border-color: #fff;
+}
+
+/* Secondary Actions (Blue) */
+QPushButton#SecondaryBtn {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1e3c72, stop:1 #2a5298);
+    color: #FFFFFF;
+    font-family: "Segoe UI";
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 25px;
+    border: 2px solid #C8AA6E;
+    letter-spacing: 1px;
+}
+QPushButton#SecondaryBtn:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2a5298, stop:1 #1e3c72);
+    border-color: #fff;
+}
+
+/* Alert Actions (Red/Orange) */
+QPushButton#CancelBtn {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #cb2d3e, stop:1 #ef473a);
+    color: #FFFFFF;
+    font-family: "Segoe UI";
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 25px;
+    border: 2px solid #C8AA6E;
+}
+QPushButton#CancelBtn:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ef473a, stop:1 #cb2d3e);
+    border-color: #fff;
 }
 
 /* Glass Cards (Bottom Right) */
@@ -177,7 +230,7 @@ class LauncherWindow(QMainWindow):
     # New Signals for Selection
     sig_confirm_download = pyqtSignal(list) # List of dicts/paths
     sig_cancel_selection = pyqtSignal()
-    sig_cancel_selection = pyqtSignal()
+    sig_stop_download = pyqtSignal()
     sig_open_library = pyqtSignal() # Request to open library
     sig_go_home = pyqtSignal() # Request to go home (cleanup)
     sig_update_available = pyqtSignal(str, str) # version, url
@@ -207,6 +260,7 @@ class LauncherWindow(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
+        self._sync_card_mode = "SYNC"
         self.setStyleSheet(STYLESHEET)
 
         # Window Icon
@@ -273,6 +327,8 @@ class LauncherWindow(QMainWindow):
         # Carousel State
         self.bg_paths = []
         self.bg_index = 0
+        self.bg_queue = []
+        self.bg_history = [] # Last indices shown
         self.init_carousel()
 
         # Window Dragging State
@@ -287,17 +343,23 @@ class LauncherWindow(QMainWindow):
         valid_ext = ('.jpg', '.jpeg', '.png', '.webp')
         assets_dir = resource_path("assets")
         if os.path.exists(assets_dir):
-            # Include ALL images in assets/ for the carousel
             self.bg_paths = [os.path.join(assets_dir, f) for f in os.listdir(assets_dir) 
                              if f.lower().endswith(valid_ext)]
         
-        # fallback if nothing found
         if not self.bg_paths:
-            print("[WARN] No background assets found in assets/")
+            print("[WARN] No background assets found")
             return
 
+        # Prepare first queue
+        self.bg_queue = list(range(len(self.bg_paths)))
+        random.shuffle(self.bg_queue)
+        
+        # Pick first random from queue
+        self.bg_index = self.bg_queue.pop(0)
+        self.bg_history = [self.bg_index]
+
         # Load first image
-        pix = QPixmap(self.bg_paths[0])
+        pix = QPixmap(self.bg_paths[self.bg_index])
         if not pix.isNull():
             scaled_pix = pix.scaled(
                 1100, 650, 
@@ -305,20 +367,34 @@ class LauncherWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation
             )
             self.bg_label_back.setPixmap(scaled_pix)
-        else:
-            print(f"[ERROR] Could not load background: {self.bg_paths[0]}")
         
         # Start Timer
         if len(self.bg_paths) > 1:
             self.carousel_timer = QTimer(self)
             self.carousel_timer.timeout.connect(self.next_background)
-            self.carousel_timer.start(8000) # 8 seconds per image
+            self.carousel_timer.start(8000)
 
     def next_background(self):
         if self.bg_transition_anim.state() == QPropertyAnimation.State.Running:
             return
             
-        self.bg_index = (self.bg_index + 1) % len(self.bg_paths)
+        if not self.bg_queue:
+            # Re-fill and shuffle new round
+            new_round = list(range(len(self.bg_paths)))
+            random.shuffle(new_round)
+            
+            # Constraint: First of new round != Last of old round (and previous to last)
+            # Only apply if we have enough variety
+            if len(self.bg_paths) > 2:
+                while new_round[0] in self.bg_history[-2:]:
+                    random.shuffle(new_round)
+            
+            self.bg_queue = new_round
+
+        self.bg_index = self.bg_queue.pop(0)
+        self.bg_history.append(self.bg_index)
+        if len(self.bg_history) > 10: self.bg_history.pop(0)
+
         pix = QPixmap(self.bg_paths[self.bg_index])
         
         if pix.isNull():
@@ -372,7 +448,9 @@ class LauncherWindow(QMainWindow):
         self.nav_container = QWidget()
         self.nav_layout = QHBoxLayout(self.nav_container)
         self.nav_layout.setContentsMargins(0, 0, 0, 0)
-        self.nav_layout.setSpacing(10) # Minimal base spacing
+        self.nav_layout.setSpacing(10) 
+
+        self.nav_buttons = {} # Store for lockout
 
         nav_data = [
             ("INICIO", self.sig_go_home.emit),
@@ -407,6 +485,7 @@ class LauncherWindow(QMainWindow):
                 """)
             btn.clicked.connect(callback)
             self.nav_layout.addWidget(btn)
+            self.nav_buttons[text] = btn
 
         self.header_layout.addWidget(self.nav_container)
         
@@ -434,6 +513,14 @@ class LauncherWindow(QMainWindow):
         self.pbar.setValue(0)
         
         self.header_layout.addWidget(self.frm_status)
+
+        # Shadow Effect
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(20)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        self.frm_status.setGraphicsEffect(shadow)
 
         # Add Header to Main Layout
         self.main_layout.addWidget(self.frm_header)
@@ -502,8 +589,9 @@ class LauncherWindow(QMainWindow):
         self.btn_play.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_play.clicked.connect(self.sig_play.emit)
 
-        self.btn_sync, self.lbl_sync_icon = self.create_card(parent, 750, 320, "🔄", "SINCRONIZAR", "Buscar canciones en el servidor", self.sig_sync)
-        self.btn_config, _ = self.create_card(parent, 920, 320, "⚙️", "CONFIG", "Rutas y Datos", self.sig_config)
+        self.btn_sync, self.lbl_sync_icon = self.create_card(parent, 750, 320, "↺", "SINCRONIZAR", "Buscar canciones en el servidor", None)
+        self.btn_sync.clicked.connect(self._on_sync_card_clicked)
+        self.btn_config, _ = self.create_card(parent, 920, 320, "⚙", "CONFIG", "Rutas y Datos", self.sig_config)
 
         # 5. Alert Notification (❗ Symbol + Text)
         self.frm_alert = QWidget(parent)
@@ -532,27 +620,27 @@ class LauncherWindow(QMainWindow):
         # Premium Card Container
         btn = QPushButton(parent)
         btn.setObjectName("GlassCard")
-        btn.setGeometry(x, y, 150, 200)
+        btn.setGeometry(x, y, 150, 170)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         
         # Icon
         lbl_icon = QLabel(icon, parent)
         lbl_icon.setObjectName("CardIcon")
-        lbl_icon.setGeometry(x, y + 30, 150, 50)
+        lbl_icon.setGeometry(x, y + 20, 150, 50)
         lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
         # Title
         lbl_title = QLabel(title, parent)
         lbl_title.setObjectName("CardTitle")
-        lbl_title.setGeometry(x, y + 90, 150, 30)
+        lbl_title.setGeometry(x, y + 75, 150, 30)
         lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
         # Description
         lbl_desc = QLabel(desc, parent)
         lbl_desc.setObjectName("CardDesc")
-        lbl_desc.setGeometry(x + 10, y + 120, 130, 50)
+        lbl_desc.setGeometry(x + 10, y + 105, 130, 50)
         lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_desc.setWordWrap(True)
         lbl_desc.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -562,13 +650,10 @@ class LauncherWindow(QMainWindow):
         btn.title_label = lbl_title
         btn.desc_label = lbl_desc
 
-        btn.clicked.connect(signal.emit)
+        if signal:
+            btn.clicked.connect(signal.emit)
         return btn, lbl_icon 
 
-
-    def _setup_selection_page(self, parent):
-        # We'll implement this in the next step
-        pass
 
     def _setup_selection_page(self, parent):
         # --- Title ---
@@ -584,43 +669,44 @@ class LauncherWindow(QMainWindow):
         # --- Search Bar ---
         self.txt_search =  QPushButton("🔍", parent) # Just icon
         self.txt_search.setStyleSheet("border: none; background: transparent; font-size: 16px;")
-        self.txt_search.move(50, 95) # Moved up
+        self.txt_search.move(50, 95) 
         
-        # Let's use QLineEdit properly
-        # from PyQt6.QtWidgets import QLineEdit # Already imported globally
         self.inp_search = QLineEdit(parent)
         self.inp_search.setPlaceholderText("Buscar canción o artista...")
-        self.inp_search.setGeometry(80, 95, 300, 30) # Moved up
+        self.inp_search.setGeometry(80, 95, 300, 35) 
         self.inp_search.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(0, 0, 0, 50);
+                background-color: rgba(0, 0, 0, 80);
                 color: #ddd;
                 border: 1px solid #444;
-                border-radius: 15px;
-                padding-left: 10px;
+                border-radius: 17px;
+                padding-left: 15px;
                 font-family: 'Segoe UI';
             }
-            QLineEdit:focus {
-                border: 1px solid #0AC8B9;
-            }
+            QLineEdit:focus { border: 1px solid #0AC8B9; }
         """)
         self.inp_search.textChanged.connect(self.filter_table)
 
         # --- Select All Checkbox ---
         self.chk_select_all = QCheckBox("Seleccionar todo", parent)
-        self.chk_select_all.move(400, 100) # Moved up
+        self.chk_select_all.setGeometry(400, 95, 150, 35) 
         self.chk_select_all.setChecked(True)
-        self.chk_select_all.setStyleSheet("color: #aaa; font-family: 'Segoe UI';")
+        self.chk_select_all.setStyleSheet("color: #aaa; font-family: 'Segoe UI'; font-size: 12px;")
         self.chk_select_all.stateChanged.connect(self.toggle_all_selection)
+
+        self.chk_exclude_videos = QCheckBox("Omitir Videos", parent)
+        self.chk_exclude_videos.setGeometry(560, 95, 120, 35) 
+        self.chk_exclude_videos.setStyleSheet("color: #777; font-family: 'Segoe UI'; font-size: 11px;")
+        self.chk_exclude_videos.setToolTip("Omitir archivos .mp4, .webm, etc. para descargar más rápido.")
 
         self.lbl_selection_summary = QLabel("0 seleccionadas de 0 disponibles", parent)
         self.lbl_selection_summary.setStyleSheet("color: #0AC8B9; font-family: 'Segoe UI'; font-weight: bold; font-size: 13px;")
-        self.lbl_selection_summary.move(550, 100)
-        self.lbl_selection_summary.resize(400, 20)
+        self.lbl_selection_summary.setGeometry(720, 95, 350, 35)
+        self.lbl_selection_summary.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
         # --- Table ---
         self.table_songs = QTableWidget(parent)
-        self.table_songs.setGeometry(50, 140, 1000, 350) # Moved up, height reduced slightly
+        self.table_songs.setGeometry(50, 175, 1000, 360) 
         self.table_songs.setColumnCount(3)
         self.table_songs.setHorizontalHeaderLabels(["", "Canción / Archivo", "Estado"])
         self.table_songs.verticalHeader().setVisible(False)
@@ -661,41 +747,51 @@ class LauncherWindow(QMainWindow):
 
         # --- Buttons ---
         self.btn_dl_selection = QPushButton("DESCARGAR SELECCIONADOS", parent)
-        self.btn_dl_selection.setObjectName("PlayBtn") # Re-use Hero Button Style
-        self.btn_dl_selection.setGeometry(800, 510, 250, 50) # Moved UP to 510
+        self.btn_dl_selection.setObjectName("PlayBtn") 
+        self.btn_dl_selection.setGeometry(780, 560, 275, 50) 
         self.btn_dl_selection.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_dl_selection.clicked.connect(self.emit_confirm_download)
+        self.btn_dl_selection.clicked.connect(self.handle_dl_button_click)
 
-        self.btn_cancel_selection = QPushButton("Cancelar", parent)
-        self.btn_cancel_selection.setStyleSheet("""
-            background-color: transparent;
-            color: #aaa;
-            font-weight: bold;
-            font-size: 14px;
-            border: 1px solid #555;
-            border-radius: 5px;
-        """)
-        self.btn_cancel_selection.setGeometry(650, 510, 130, 50) # Moved UP to 510
+        self.btn_selection_go_home = QPushButton("VOLVER AL INICIO", parent)
+        self.btn_selection_go_home.setObjectName("SecondaryBtn")
+        self.btn_selection_go_home.setGeometry(550, 560, 210, 50) 
+        self.btn_selection_go_home.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_selection_go_home.clicked.connect(self.sig_go_home.emit)
+        # We start with it visible if we are in results
+        self.btn_selection_go_home.show() 
+
+        self.btn_cancel_selection = QPushButton("CANCELAR", parent)
+        self.btn_cancel_selection.setObjectName("CancelBtn")
+        self.btn_cancel_selection.setGeometry(400, 560, 140, 50) 
         self.btn_cancel_selection.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_cancel_selection.clicked.connect(self.sig_cancel_selection.emit)
-        self.btn_cancel_selection.clicked.connect(lambda: self.set_sync_card_mode("SYNC"))
+        # We REMOVED the direct lambda reset to SYNC to handle it logically
+        self.btn_cancel_selection.clicked.connect(self._handle_cancel_click)
 
         # --- Progress Bar Container (Initially Hidden) ---
         self.frm_selection_progress = QFrame(parent)
         self.frm_selection_progress.setObjectName("GlassPanel")
-        self.frm_selection_progress.setGeometry(50, 500, 580, 70)
+        self.frm_selection_progress.setGeometry(50, 550, 330, 70) 
         self.frm_selection_progress.hide()
+
+        # Shadow Effect for Selection Progress
+        shadow_sel = QGraphicsDropShadowEffect()
+        shadow_sel.setBlurRadius(20)
+        shadow_sel.setXOffset(0)
+        shadow_sel.setYOffset(4)
+        shadow_sel.setColor(QColor(0, 0, 0, 180))
+        self.frm_selection_progress.setGraphicsEffect(shadow_sel)
 
         self.lbl_selection_status = QLabel("PREPARANDO DESCARGA...", self.frm_selection_progress)
         self.lbl_selection_status.setStyleSheet("color: #0AC8B9; font-weight: bold; font-family: 'Segoe UI'; font-size: 11px;")
-        self.lbl_selection_status.setGeometry(15, 12, 400, 20)
+        self.lbl_selection_status.setGeometry(15, 12, 300, 20)
 
         self.lbl_selection_substatus = QLabel("Iniciando conexión con el servidor...", self.frm_selection_progress)
         self.lbl_selection_substatus.setStyleSheet("color: #aaa; font-size: 11px;")
-        self.lbl_selection_substatus.setGeometry(15, 30, 550, 20)
+        self.lbl_selection_substatus.setGeometry(15, 30, 300, 20)
 
         self.pbar_selection = QProgressBar(self.frm_selection_progress)
-        self.pbar_selection.setGeometry(15, 52, 550, 6)
+        self.pbar_selection.setGeometry(15, 52, 300, 6)
         self.pbar_selection.setTextVisible(False)
         self.pbar_selection.setValue(0)
         self.pbar_selection.setStyleSheet("""
@@ -703,21 +799,50 @@ class LauncherWindow(QMainWindow):
             QProgressBar::chunk { background: #0AC8B9; border-radius: 3px; }
         """)
 
+        # Detailed Progress Label
+        self.lbl_selection_file = QLabel("", self.frm_selection_progress)
+        self.lbl_selection_file.setStyleSheet("color: #666; font-size: 9px; font-family: 'Consolas';")
+        self.lbl_selection_file.setGeometry(15, 45, 300, 15)
+        self.lbl_selection_file.setAlignment(Qt.AlignmentFlag.AlignRight)
+
     def set_selection_downloading_state(self, is_downloading):
         if is_downloading:
-            self.btn_dl_selection.setText("DESCARGANDO...")
-            self.btn_dl_selection.setEnabled(False)
-            self.btn_cancel_selection.setEnabled(False)
-            # Visual feedback on disabled state
-            self.btn_dl_selection.setStyleSheet("background-color: #333; color: #888; border: 1px solid #555;")
-            self.frm_selection_progress.show() # SHOW Progress
+            self.btn_dl_selection.setText("DETENER")
+            self.btn_dl_selection.setEnabled(True) # ENABLED FOR STOPPING
+            self.btn_cancel_selection.setEnabled(True) # ENABLED FOR CANCELING
+            self.frm_selection_progress.show() 
+            self.btn_selection_go_home.show()
+            self.btn_sync.setEnabled(True) # KEEP ENABLED FOR NAVIGATION
+            if hasattr(self, 'btn_config'): self.btn_config.setEnabled(False)
+            
+            # Lockout ONLY destructive header buttons
+            if "SALIR" in self.nav_buttons: self.nav_buttons["SALIR"].setEnabled(False)
+            if "WEB" in self.nav_buttons: self.nav_buttons["WEB"].setEnabled(False)
+            if "DISCORD" in self.nav_buttons: self.nav_buttons["DISCORD"].setEnabled(False)
         else:
             self.btn_dl_selection.setText("DESCARGAR SELECCIONADOS")
             self.btn_dl_selection.setEnabled(True)
             self.btn_cancel_selection.setEnabled(True)
-            # Restore PlayBtn style
-            self.btn_dl_selection.setStyleSheet("") 
-            self.frm_selection_progress.hide() # HIDE Progress
+            self.frm_selection_progress.hide() 
+            self.btn_selection_go_home.show() 
+            self.btn_sync.setEnabled(True) 
+            if hasattr(self, 'btn_config'): self.btn_config.setEnabled(True)
+
+            # Restore ALL Nav Buttons
+            for btn in self.nav_buttons.values():
+                btn.setEnabled(True)
+
+    # --- Thread-Safe Slots for Updating Selection Progress ---
+    def set_selection_file_log(self, filename):
+        if hasattr(self, 'lbl_selection_file'):
+            self.lbl_selection_file.setText(f"D-LOAD: {filename}")
+
+    def _handle_cancel_click(self):
+        # Only reset to SYNC if we are NOT currently in DOWNLOADING mode
+        if self._sync_card_mode != "DOWNLOADING":
+            self.set_sync_card_mode("SYNC")
+        # If we ARE downloading, CANCELAR just acts as a "Go Home" without resetting the card
+        self.sig_go_home.emit()
 
     def populate_table(self, songs_list):
         # Disconnect to avoid redundant connections or recursion
@@ -775,13 +900,26 @@ class LauncherWindow(QMainWindow):
         self.update_selection_counter()
         self.table_songs.itemChanged.connect(self.update_selection_counter)
 
+    def handle_dl_button_click(self):
+        if self.btn_dl_selection.text() == "DETENER":
+            self.sig_stop_download.emit()
+        else:
+            self.emit_confirm_download()
+
     def emit_confirm_download(self):
         selected_files = []
+        exclude_videos = self.chk_exclude_videos.isChecked()
+        video_exts = ('.mp4', '.webm', '.avi', '.mkv', '.m4v', '.mov', '.ogv')
+
         for i in range(self.table_songs.rowCount()):
             if self.table_songs.item(i, 0).checkState() == Qt.CheckState.Checked:
                 # Add all files from this song group
                 group = self.current_songs_data[i]
-                selected_files.extend(group['files'])
+                for f in group['files']:
+                    # Filter videos if requested
+                    if exclude_videos and f['nombre'].lower().endswith(video_exts):
+                        continue
+                    selected_files.append(f)
         
         self.sig_confirm_download.emit(selected_files)
         self.set_sync_card_mode("SYNC") # Reset card logic on confirm
@@ -824,21 +962,31 @@ class LauncherWindow(QMainWindow):
         self.stack.setCurrentIndex(2)
 
     def set_sync_card_mode(self, mode):
-        # mode: "SYNC" or "RESULTS"
-        try:
-            self.btn_sync.clicked.disconnect()
-        except: pass
-
+        # mode: "SYNC", "RESULTS", or "DOWNLOADING"
+        self._sync_card_mode = mode
+        
         if mode == "RESULTS":
             self.btn_sync.title_label.setText("VER RESULTADOS")
-            self.btn_sync.desc_label.setText("Volver a la lista detected")
-            self.btn_sync.icon_label.setText("📝")
-            self.btn_sync.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+            self.btn_sync.desc_label.setText("Ver canciones detectadas")
+            self.btn_sync.icon_label.setText("☰") # Minimalist List/Menu
+        elif mode == "DOWNLOADING":
+            self.btn_sync.title_label.setText("VER PROGRESO")
+            self.btn_sync.desc_label.setText("Toca para ver la descarga 🚀")
+            self.btn_sync.icon_label.setText("▶") # Minimalist Play/Action
         else:
             self.btn_sync.title_label.setText("SINCRONIZAR")
             self.btn_sync.desc_label.setText("Buscar nuevas canciones")
-            self.btn_sync.icon_label.setText("🔄")
-            self.btn_sync.clicked.connect(self.sig_sync.emit)
+            self.btn_sync.icon_label.setText("↺") # Minimalist Sync
+
+    def _on_sync_card_clicked(self):
+        self._stop_download = False # Initialize flag
+        if self._sync_card_mode == "SYNC":
+            self.sig_sync.emit()
+        else:
+            try:
+                self.stack.setCurrentIndex(1)
+            except Exception as e:
+                self.log(f"UI ERROR: {e}")
 
     def _setup_songs_page(self, parent):
         # --- Title ---
@@ -1124,3 +1272,18 @@ class LauncherWindow(QMainWindow):
     def show_songs_alert(self, visible):
         if hasattr(self, 'frm_alert'):
             self.frm_alert.setVisible(visible)
+    def closeEvent(self, event):
+        # If we are downloading, confirm before exit
+        if hasattr(self, '_sync_card_mode') and self._sync_card_mode == "DOWNLOADING":
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(self, 'Confirmar Salida',
+                "Hay una descarga activa. ¿Estás seguro de que quieres salir?\nEsto podría dejar archivos incompletos.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                QMessageBox.StandardButton.No)
+
+            if reply == QMessageBox.StandardButton.Yes:
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()

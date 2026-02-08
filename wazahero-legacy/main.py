@@ -4,6 +4,7 @@ import time
 import threading
 import json
 import ctypes
+import concurrent.futures
 from PyQt6.QtWidgets import (QApplication, QFileDialog) 
 from PyQt6.QtGui import QIcon
 from src.ui.main_window import LauncherWindow, QColor, VERSION
@@ -18,7 +19,7 @@ class Controller:
     def __init__(self):
         # Fix taskbar icon on Windows
         try:
-            myappid = u'chenszen.wazahero.launcher.1.3.1' # arbitrary string
+            myappid = u'chenszen.wazahero.launcher.1.3.14' # arbitrary string
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except:
             pass
@@ -44,12 +45,13 @@ class Controller:
         
         #New Selection Signals
         self.gui.sig_confirm_download.connect(self.start_download)
-        self.gui.sig_cancel_selection.connect(self.cancel_selection)
+        self.gui.sig_stop_download.connect(self.handle_stop_download)
         self.gui.sig_cancel_selection.connect(self.cancel_selection)
         self.gui.sig_open_library.connect(self.open_local_library)
         self.gui.sig_go_home.connect(self.handle_go_home)
         
         self.pending_results = False # track if  pending songs to sync
+        self.stop_requested = False 
         
         # Mostrar ventana
         self.gui.show()
@@ -101,6 +103,9 @@ class Controller:
         except: pass # Don't crash if check fails
 
     def handle_sync(self):
+        if self.gui._sync_card_mode == "DOWNLOADING":
+            self.gui.log("! Sincronización ignorada: Descarga en curso.")
+            return
         rs = self.logic.obtener_config('ruta_songs')
         if not rs:
             self.gui.log("! Primero configura la carpeta Songs.")
@@ -228,6 +233,7 @@ class Controller:
                     })
                 
                 # TRIGGER SELECTION UI (Main Thread)
+                self.gui.set_status("NUEVOS CHART DETECTADOS", f"Se encontraron {count_songs} canciones.", COLOR_ACENTO)
                 self.pending_results = True # Mark as results pending
                 self.gui.show_selection(ui_data)
                 # Note: We DON'T enable sync button yet, user is in selection mode
@@ -240,15 +246,22 @@ class Controller:
             traceback.print_exc()
 
     def start_download(self, selected_songs):
+        self.stop_requested = False
         self.gui.log(f"Iniciando descarga de {len(selected_songs)} elementos...")
         self.gui.set_status("INICIANDO DESCARGA", "Preparando...", COLOR_ACENTO)
         
         # 1. Update UI Feedback
         self.gui.set_selection_downloading_state(True)
+        self.gui.set_sync_card_mode("DOWNLOADING")
         self.gui.show_songs_alert(False) # Hide alert if we are downloading
         self.pending_results = False 
         
         threading.Thread(target=self.download_worker, args=(selected_songs,), daemon=True).start()
+
+    def handle_stop_download(self):
+        self.gui.log("! Solicitud de parada enviada. Esperando a terminar archivo actual...")
+        self.stop_requested = True
+        self.gui.set_status("DETENIENDO...", "Finalizando tareas...", COLOR_ACENTO)
 
     def cancel_selection(self):
         self.gui.show_home()
@@ -259,39 +272,62 @@ class Controller:
 
     def download_worker(self, descargas_pendientes):
         try:
-            service = self.logic.obtener_servicio()
+            # Get a fresh service and total count
+            total_dl = len(descargas_pendientes)
+            completed = 0
             
-            self.gui.set_status("DESCARGANDO", f"Actualizando {len(descargas_pendientes)} archivos...")
+            self.gui.set_status("DESCARGANDO", f"Preparando {total_dl} archivos...")
             self.gui.set_progress(0) 
             
             start_dl = time.time()
-            total_dl = len(descargas_pendientes)
-            
-            for i, archivo in enumerate(descargas_pendientes):
-                nombre = archivo['nombre']
+
+            def download_task(archivo):
+                # FRESH SERVICE PER THREAD for thread-safety
+                try:
+                    self.gui.set_selection_file_log(archivo['nombre'])
+                    thread_service = self.logic.obtener_servicio()
+                    self.logic.descargar_archivo(thread_service, archivo['id_drive'], archivo['ruta_final'])
+                    return (True, archivo['nombre'])
+                except Exception as e:
+                    return (False, f"{archivo['nombre']}: {e}")
+
+            # Using ThreadPoolExecutor with optimal workers (4)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(download_task, arch): arch for arch in descargas_pendientes}
                 
-                # ETA Calc
-                elapsed = time.time() - start_dl
-                if i > 0:
-                    vel = i / elapsed
-                    restantes = total_dl - i
-                    eta = int(restantes / vel)
+                for future in concurrent.futures.as_completed(futures):
+                    if self.stop_requested:
+                        self.gui.log("! Descarga detenida por el usuario.")
+                        # Shutdown executor without waiting for all futures if necessary
+                        # but as_completed will continue until all scheduled are done.
+                        # To truly stop now, we would need to check inside download_task too.
+                        break
+
+                    completed += 1
+                    success, message = future.result()
+                    
+                    if success:
+                        self.gui.log(f"OK: {message}")
+                    else:
+                        self.gui.log(f"ERR: {message}")
+                    
+                    # ETA Calc
+                    elapsed = time.time() - start_dl
+                    vel = completed / elapsed # files per second
+                    restantes = total_dl - completed
+                    eta = int(restantes / vel) if vel > 0 else 0
                     mins, segs = divmod(eta, 60)
                     eta_txt = f"{mins}m {segs}s"
-                else:
-                    eta_txt = "..."
-                
-                self.gui.set_status("DESCARGANDO", f"[{i+1}/{total_dl}] {nombre} - Falta: {eta_txt}")
-                
-                try:
-                    self.logic.descargar_archivo(service, archivo['id_drive'], archivo['ruta_final'])
-                    self.gui.log(f"OK: {nombre}")
-                except Exception as e:
-                    self.gui.log(f"ERR {nombre}: {e}")
-                
-                self.gui.set_progress((i + 1) / total_dl)
+                    
+                    self.gui.set_status("DESCARGANDO", f"[{completed}/{total_dl}] - Falta: {eta_txt}")
+                    self.gui.set_progress(completed / total_dl)
 
-            self.gui.set_status("PROCESO TERMINADO", f"Se descargaron {len(descargas_pendientes)} archivos.", COLOR_EXITO)
+            if self.stop_requested:
+                self.gui.set_status("DESCARGA DETENIDA", "Se detuvo el proceso.", COLOR_ACENTO)
+                self.gui.set_selection_downloading_state(False)
+            else:
+                self.gui.set_status("PROCESO TERMINADO", f"Se descargaron {len(descargas_pendientes)} archivos.", COLOR_EXITO)
+                self.gui.set_selection_downloading_state(False)
             
             # Al finalizar, volver al Home
             time.sleep(1)
@@ -413,9 +449,27 @@ class Controller:
             self.gui.show_library_page()
             
     def handle_go_home(self):
-        # Reset any active/pending states
-        self.gui.set_sync_enabled(True)
-        self.gui.set_status("ONLINE", "Esperando...", COLOR_ACENTO)
+        # Reset any active/pending states for UI feedback
+        self.gui.set_progress(1) # Clear the 99% bar
+
+        # If we are downloading, we DON'T reset the card or the main status
+        if self.gui._sync_card_mode == "DOWNLOADING":
+            self.gui.show_home()
+            return
+
+        # Restore card and status based on results
+        if self.pending_results:
+            self.gui.set_sync_card_mode("RESULTS")
+            self.gui.set_status("NUEVOS CHART DETECTADOS", "Sincronización pendiente.", COLOR_ACENTO)
+        else:
+            self.gui.set_sync_card_mode("SYNC")
+            # If we were already ready, we keep it
+            re = self.logic.obtener_config('ruta_exe')
+            if re:
+                self.gui.set_status("LISTO PARA JUGAR", "Todo configurado correctamente.", COLOR_EXITO)
+            else:
+                self.gui.set_status("ONLINE", "Esperando...", COLOR_ACENTO)
+            
         self.gui.show_home()
 
     def adivinar_rutas_iniciales(self):

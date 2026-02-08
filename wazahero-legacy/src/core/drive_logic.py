@@ -21,7 +21,8 @@ def load_credentials():
 CREDENTIALS_DATA = load_credentials()
 
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-CONFIG_FILE = 'config/launcher_config.json'
+CONFIG_FILE = os.path.join(os.getcwd(), 'config', 'launcher_config.json')
+MASTER_DATA = os.path.join(os.getcwd(), 'data', 'master_songs.json')
 ID_CARPETA_MAESTRA = '1K4RFF9QN5n0QLDj7RH73xdA5I4IOlrmj'
 socket.setdefaulttimeout(300)
 
@@ -51,7 +52,7 @@ class DriveManager:
         os.makedirs(os.path.dirname(ruta_destino), exist_ok=True)
         request = service.files().get_media(fileId=file_id)
         fh = io.FileIO(ruta_destino, 'wb')
-        downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024)
+        downloader = MediaIoBaseDownload(fh, request, chunksize=5*1024*1024)
         done = False
         while not done:
             _, done = downloader.next_chunk()
@@ -122,6 +123,8 @@ class DriveManager:
                 print("Descargando master_songs.json actualizado...")
                 self.descargar_archivo(service, file_id, "data/master_songs.json")
                 return True
+            else:
+                print("[WAR] No se encontró master_songs.json en el servidor.")
         except Exception as e:
             print(f"Error actualizando master: {e}")
         return False
@@ -171,3 +174,85 @@ class DriveManager:
                 rutas_detectadas['ruta_exe'] = exe
                 break
         return rutas_detectadas
+
+    def verificar_actualizaciones(self, service, log_callback=None):
+        """
+        Escanea master_songs.json y compara con la biblioteca local.
+        Retorna un diccionario de canciones pendientes de descarga.
+        """
+        if log_callback: log_callback("Iniciando escaneo de biblioteca...")
+        rs = self.obtener_config('ruta_songs')
+        if not rs or not os.path.exists(rs):
+            if log_callback: log_callback("[ERR] Ruta de canciones no válida.")
+            return {}
+
+        # 1. Cargar master_songs.json
+        master_path = "data/master_songs.json"
+        if not os.path.exists(master_path):
+            if log_callback: log_callback("Actualizando datos del maestro...")
+            self.actualizar_master(service)
+        
+        if not os.path.exists(master_path):
+            if log_callback: log_callback("[ERR] No se pudo obtener el maestro.")
+            return {}
+
+        try:
+            with open(master_path, 'r', encoding='utf-8') as f:
+                servidor = json.load(f)
+        except: 
+            if log_callback: log_callback("[ERR] Error al leer el maestro.")
+            return {}
+
+        if log_callback: log_callback("Comparando con colección local...")
+        # 2. Cargar Cache Local
+        local_cache = self.load_cache()
+        
+        descargas_pendientes = {}
+        
+        # 3. Comparar
+        archivos_servidor = servidor.get('archivos', servidor)
+        if not isinstance(archivos_servidor, list):
+             print("[ERR] master_songs.json is not a valid list of files.")
+             return {}
+
+        total = len(archivos_servidor)
+        for i, item in enumerate(archivos_servidor):
+            if not isinstance(item, dict): continue
+            
+            if i % 50 == 0 and log_callback:
+                log_callback(f"Verificando {i}/{total} archivos...")
+
+            ruta_relativa = item.get('ruta_relativa', '').replace('\\', '/')
+            ruta_final = os.path.join(rs, ruta_relativa, item['nombre'])
+            
+            descargar = False
+            
+            if not os.path.exists(ruta_final):
+                descargar = True
+            else:
+                try:
+                    size_local = os.path.getsize(ruta_final)
+                    size_remoto = int(item.get('tamano', 0))
+                    
+                    if size_local != size_remoto:
+                        descargar = True
+                    else:
+                        md5_local = self.get_file_hash(ruta_final, cache=local_cache)
+                        md5_remoto = item.get('hash')
+                        if md5_remoto and md5_local != md5_remoto:
+                            descargar = True
+                except:
+                    descargar = True
+            
+            if descargar:
+                item['ruta_final'] = ruta_final 
+                if 'id_drive' not in item:
+                    item['id_drive'] = item.get('id')
+                
+                group_key = item['ruta_relativa']
+                if group_key not in descargas_pendientes:
+                    descargas_pendientes[group_key] = []
+                descargas_pendientes[group_key].append(item)
+
+        self.save_cache(local_cache)
+        return descargas_pendientes
