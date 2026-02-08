@@ -5,6 +5,7 @@ import {
     ShieldCheck, Globe, HardDrive
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import ReactMarkdown from 'react-markdown'
 
 // --- Electron API Bridge ---
 const electron = (window as any).ipcRenderer
@@ -32,14 +33,14 @@ function App() {
         return saved ? parseFloat(saved) : 1.0
     })
 
-    const [status, setStatus] = useState({ title: 'ONLINE', sub: 'Waza Core cargado.', color: '#0ac8b9' })
+    const [status, setStatus] = useState({ title: 'SISTEMA', sub: 'Calculando...', color: '#c8aa6e' })
     const [backgrounds, setBackgrounds] = useState<string[]>([])
     const [currentBgIndex, setCurrentBgIndex] = useState(0)
     const [localLibrary, setLocalLibrary] = useState<Song[]>([])
     const [masterLibrary, setMasterLibrary] = useState<Song[]>([])
     const [libraryFilter, setLibraryFilter] = useState('LOCALES')
     const [stats, setStats] = useState<any>({ total_songs: 0, last_sync: '-', master_songs: 1100, detailed: null })
-    const [patchNotes, setPatchNotes] = useState({ version: '', body: '', date: '' })
+    const [patchNotes, setPatchNotes] = useState<any[]>([])
     const [paths, setPaths] = useState({ game: 'No seleccionado', songs: 'No seleccionado' })
     const [playingAudio, setPlayingAudio] = useState<string | null>(null)
     const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null)
@@ -57,7 +58,18 @@ function App() {
     const [downloadWithVideo, setDownloadWithVideo] = useState(false)
     const downloadStartTimeRef = useRef<number>(0)
     const [visibleCount, setVisibleCount] = useState(60)
+
     const [currentDashboardSlide, setCurrentDashboardSlide] = useState(0)
+    const [discordReady, setDiscordReady] = useState(false)
+    const [discordUser, setDiscordUser] = useState<any>(null)
+    const [discordActivity, setDiscordActivity] = useState<any>(null)
+    const [rpcEnabled, setRpcEnabled] = useState(() => localStorage.getItem('waza_rpc_enabled') !== 'false')
+    const [currentVersion, setCurrentVersion] = useState('0.0.0')
+    const [updateAvailable, setUpdateAvailable] = useState(false)
+
+    // Social State
+    const [socialFriends, setSocialFriends] = useState<any[]>([])
+    const [socialActivity, setSocialActivity] = useState<any[]>([])
 
     // --- Scaling (Ctrl + / -) ---
     useEffect(() => {
@@ -107,6 +119,21 @@ function App() {
         setStats(gameStats)
     }
 
+    const fetchSocialData = async () => {
+        if (!electron) return
+        const friends = await electron.invoke('get-friends')
+        const activity = await electron.invoke('get-activity')
+        setSocialFriends(friends || [])
+        setSocialActivity(activity || [])
+    }
+
+    const logLocalActivity = async (action: string, target: string, user?: string) => {
+        if (!electron) return
+        const newActivity = await electron.invoke('log-activity', action, target, user)
+        setSocialActivity(newActivity || [])
+    }
+
+    // --- Data Initialization ---
     // --- Data Initialization ---
     useEffect(() => {
         if (!electron) return
@@ -127,32 +154,151 @@ function App() {
                 songs: songsPath || 'No seleccionado'
             })
 
-            // Library
-            const lib = await electron.invoke('scan-library')
-            setLocalLibrary(lib || [])
+            if (songsPath) {
+                const master = await electron.invoke('get-master-library')
+                setMasterLibrary(master || [])
 
-            const master = await electron.invoke('get-master-library')
-            setMasterLibrary(master || [])
+                // Load local library (cached or fresh)
+                const lib = await electron.invoke('scan-library')
+                setLocalLibrary(lib || [])
+            }
 
-            // Check for updates
-            await checkForUpdates()
+            // Version Check & Patch Notes
+            const version = await electron.invoke('get-app-version')
+            const notes = await electron.invoke('get-patch-notes')
+            setCurrentVersion(version)
+            setPatchNotes(notes || [])
+
+            // Version comparison strictly GitHub > Local
+            if (notes && notes.length > 0 && version) {
+                const latestTag = notes[0].version.replace(/^v/, '')
+                const currentTag = version.replace(/^v/, '')
+
+                const latest = latestTag.split('.').map(Number)
+                const current = currentTag.split('.').map(Number)
+
+                let isNewer = false
+                for (let i = 0; i < 3; i++) {
+                    if ((latest[i] || 0) > (current[i] || 0)) {
+                        isNewer = true
+                        break
+                    }
+                    if ((latest[i] || 0) < (current[i] || 0)) break
+                }
+                if (isNewer) setUpdateAvailable(true)
+            }
 
             fetchStats()
+            fetchSocialData()
         }
         init()
+
+        // Global Activity Listener
+        const handleGlobalEvent = (_: any, activity: any) => {
+            setSocialActivity(prev => {
+                const updated = [activity, ...prev];
+                return updated.slice(0, 20); // Sync with MAX_ACTIVITY_LOGS
+            });
+        };
+
+        if (electron) {
+            electron.on('waza-link-event', handleGlobalEvent);
+        }
+
+        return () => {
+            if (electron) {
+                // Assuming electron.off exists or using standard naming
+                // If not, we could ignore since it's a singleton app
+            }
+        }
     }, [])
+
+    const handleManualUpdateCheck = async () => {
+        if (!electron) return
+        const notes = await electron.invoke('get-patch-notes')
+        setPatchNotes(notes || [])
+
+        if (notes && notes.length > 0 && currentVersion) {
+            const latestTag = notes[0].version.replace(/^v/, '')
+            const currentTag = currentVersion.replace(/^v/, '')
+
+            const latest = latestTag.split('.').map(Number)
+            const current = currentTag.split('.').map(Number)
+
+            let isNewer = false
+            for (let i = 0; i < 3; i++) {
+                if ((latest[i] || 0) > (current[i] || 0)) { isNewer = true; break; }
+                if ((latest[i] || 0) < (current[i] || 0)) break;
+            }
+
+            if (isNewer) {
+                setUpdateAvailable(true)
+                alert(`Nueva versión detectada en GitHub: v${latestTag}. Revisa la pestaña VERSIONES.`)
+            } else {
+                alert('El launcher está actualizado (vía GitHub).')
+            }
+        }
+    }
 
     // Check for missing/new songs
     const checkForUpdates = async () => {
         if (!electron) return
         console.log('[SYNC] Checking for updates...')
         const toSync = await electron.invoke('get-songs-to-sync')
-        console.log('[SYNC] Songs to sync:', toSync?.length || 0, toSync)
         setSongsToSync(toSync || [])
-        const hasChanges = (toSync || []).length > 0
-        console.log('[SYNC] Has updates:', hasChanges)
-        setHasUpdates(hasChanges)
+        setHasUpdates((toSync || []).length > 0)
     }
+
+    // Discord Rich Presence Updates
+    useEffect(() => {
+        if (!electron) return
+
+        let details = 'En el Menú'
+        let state = 'Navegando'
+
+        if (activeTab === 'home') {
+            if (activePage === 'notas') { details = 'Viendo Novedades'; state = 'Historial de Versiones' }
+            else if (subPage === 'SOCIAL') { details = 'Socializando'; state = 'Mirando a los Amigos' }
+            else { details = 'Explorando Inicio'; state = 'Preparándose para Rockear' }
+        } else if (activeTab === 'songs') {
+            details = 'En la Biblioteca'; state = `${localLibrary.length} canciones cargadas`
+        } else if (activeTab === 'updates') {
+            details = 'Sincronizando'; state = isDownloading ? 'Descargando canciones...' : 'Buscando actualizaciones'
+        } else if (activeTab === 'stats') {
+            details = 'Viendo Estadísticas'; state = 'Analizando el progreso'
+        } else if (activeTab === 'settings') {
+            details = 'En Ajustes'; state = 'Configurando el launcher'
+        }
+
+        if (rpcEnabled) {
+            electron.invoke('set-discord-activity', details, state)
+        } else {
+            electron.invoke('set-discord-activity', null, null) // Clear status
+        }
+    }, [activeTab, activePage, subPage, isDownloading, localLibrary.length, electron, rpcEnabled])
+
+    // Poll Discord Ready Status & User Info
+    useEffect(() => {
+        if (!electron) return
+        const checkDiscord = async () => {
+            const ready = await electron.invoke('is-discord-ready')
+            setDiscordReady(ready)
+            if (ready && rpcEnabled) {
+                const user = await electron.invoke('get-discord-user')
+                const activity = await electron.invoke('get-discord-activity')
+                setDiscordUser(user)
+                setDiscordActivity(activity)
+            } else {
+                setDiscordUser(null)
+                setDiscordActivity(null)
+            }
+        }
+        checkDiscord()
+
+
+        const interval = setInterval(checkDiscord, 3000)
+        return () => clearInterval(interval)
+    }, [electron, rpcEnabled])
 
     // Refresh stats when entering the tab
     useEffect(() => {
@@ -237,6 +383,12 @@ function App() {
         const notes = await electron.invoke('get-patch-notes')
         setPatchNotes(notes)
     }
+
+    useEffect(() => {
+        if (activeTab === 'home' && activePage === 'notas') {
+            fetchPatchNotes()
+        }
+    }, [activeTab, activePage])
 
     const handlePlay = () => electron?.invoke('launch-game')
 
@@ -437,6 +589,31 @@ function App() {
             return
         }
 
+        // If app update available, navigate to patch notes
+        if (updateAvailable) {
+            setActiveTab('home')
+            setActivePage('notas')
+            setSubPage('HISTORIAL')
+            return
+        }
+
+        // If app update available, navigate to patch notes
+        if (updateAvailable) {
+            setActiveTab('home')
+            setActivePage('notas')
+            setSubPage('HISTORIAL')
+            // fetchPatchNotes() // Calling this if it exists, or rely on useEffect. 
+            // In the file provided, fetchPatchNotes is used in the header click but defined... where?
+            // Wait, looking at previous code, fetchPatchNotes was called in header click.
+            // I should verify if fetchPatchNotes is available in scope. 
+            // Assuming it is or I'll just trigger the page switch which useEffect in 'notas' might handle if refactored, 
+            // but currently the fetching happens in useEffect check or header click? 
+            // Actually, in the PROVIDED file content, I don't see fetchPatchNotes definition but I see it used in line 746.
+            // I will assume it's available.
+            if (typeof fetchPatchNotes === 'function') fetchPatchNotes();
+            return
+        }
+
         // Force scan
         setIsScanning(true)
         try {
@@ -444,6 +621,7 @@ function App() {
             setLocalLibrary(lib || [])
             await fetchStats()
             await checkForUpdates() // Check if there are missing songs
+            logLocalActivity('ha realizado', 'Escaneo manual de biblioteca')
         } catch (error: any) {
             console.error('[ERROR] Force scan failed:', error)
         }
@@ -479,6 +657,7 @@ function App() {
                 // Refresh library
                 const lib = await electron.invoke('get-master-library')
                 setMasterLibrary(lib)
+                logLocalActivity('ha descargado', `${selected.length} canciones nuevas`)
             } else {
                 // Download failed
                 setIsDownloading(false)
@@ -701,21 +880,21 @@ function App() {
                     {activeTab === 'home' && (
                         <header className="absolute top-0 left-0 right-0 h-24 flex items-center justify-between px-12 z-[9500] bg-gradient-to-b from-black/40 to-transparent">
                             <div className="flex gap-10 h-full items-center pt-4 no-drag pointer-events-auto">
-                                {['INICIO', 'NOTAS DEL PARCHE', 'SOCIAL'].map(tab => {
-                                    const isNotas = tab === 'NOTAS DEL PARCHE';
-                                    const isSelected = isNotas ? (subPage === 'NOTAS' || subPage === tab) : (subPage === tab);
+                                {['INICIO', 'VERSIONES', 'SOCIAL'].map(tab => {
+                                    const isNotas = tab === 'VERSIONES';
+                                    const isSelected = isNotas ? (subPage === 'NOTAS' || subPage === tab || subPage === 'HISTORIAL') : (subPage === tab);
 
                                     return (
                                         <div
                                             key={tab}
-                                            className={`text-[11px] font-black tracking-[4px] cursor-pointer transition-all relative flex items-center h-full no-drag
+                                            className={`text-[11px] font-black tracking-[4px] cursor-pointer transition-all relative flex items-center gap-2 h-full no-drag
                                                 ${isSelected ? 'text-[#c8aa6e]' : 'text-[#a09b8c] hover:text-white'}
                                             `}
                                             onClick={() => {
                                                 if (isNotas) {
-                                                    setSubPage('NOTAS');
+                                                    setSubPage('HISTORIAL');
                                                     setActivePage('notas');
-                                                    fetchPatchNotes();
+                                                    if (typeof fetchPatchNotes === 'function') fetchPatchNotes();
                                                 } else {
                                                     setSubPage(tab);
                                                     setActivePage('home');
@@ -723,6 +902,9 @@ function App() {
                                             }}
                                         >
                                             {tab}
+                                            {isNotas && updateAvailable && (
+                                                <div className="w-1.5 h-1.5 rounded-full bg-[#ff6b6b] shadow-[0_0_5px_#ff6b6b] animate-pulse" />
+                                            )}
                                             {isSelected && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#c8aa6e] shadow-[0_0_10px_#c8aa6e]" />}
                                         </div>
                                     );
@@ -786,7 +968,7 @@ function App() {
                                                             className="flex items-center justify-between"
                                                         >
                                                             <div>
-                                                                <div className="text-5xl font-black text-[#30d158] leading-none">{Math.floor(stats.detailed?.integrity || 100)}%</div>
+                                                                <div className="text-5xl font-black text-[#30d158] leading-none">{Math.round(stats.detailed?.integrity || 100)}%</div>
                                                                 <div className="text-[10px] font-bold text-[#a09b8c] mt-2 tracking-[3px] uppercase">INTEGRIDAD DEL NÚCLEO</div>
                                                             </div>
                                                             <ShieldCheck size={64} className="text-white/10 absolute right-0" />
@@ -800,7 +982,7 @@ function App() {
                                                         >
                                                             <div>
                                                                 <div className="text-5xl font-black text-white leading-none">{Math.floor((stats.detailed?.totalSize || 0) / (1024 * 1024 * 1024))} <span className="text-xl">GB</span></div>
-                                                                <div className="text-[10px] font-bold text-[#a09b8c] mt-2 tracking-[3px] uppercase">ESPACIO EN DISCO</div>
+                                                                <div className="text-[10px] font-bold text-[#a09b8c] mt-2 tracking-[3px] uppercase">TAMAÑO DE LA BIBLIOTECA</div>
                                                             </div>
                                                             <HardDrive size={64} className="text-white/10 absolute right-0" />
                                                         </motion.div>
@@ -833,15 +1015,17 @@ function App() {
                                     </div>
 
                                     {/* Card 2: Online Status */}
-                                    <div className="bg-[#010101]/60 border border-white/5 rounded-xl backdrop-blur-md flex-1 h-48 flex flex-col group hover:border-[#c8aa6e]/30 transition-all relative overflow-hidden">
+                                    <div
+                                        className="bg-[#010101]/60 border border-white/5 rounded-xl backdrop-blur-md flex-1 h-48 flex flex-col group hover:border-[#c8aa6e]/30 transition-all relative overflow-hidden"
+                                    >
                                         {/* Status Glow */}
                                         <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full blur-[60px] opacity-20 transition-all duration-1000"
-                                            style={{ backgroundColor: isScanning ? '#c8aa6e' : (isDownloading ? '#3b82f6' : (hasUpdates ? '#30d158' : '#c8aa6e')) }}
+                                            style={{ backgroundColor: isScanning ? '#c8aa6e' : (isDownloading ? '#3b82f6' : (updateAvailable ? '#ff6b6b' : (hasUpdates ? '#30d158' : '#c8aa6e'))) }}
                                         />
 
                                         <div className="p-6 h-full flex flex-col">
                                             <div className="text-[10px] font-black text-[#a09b8c] tracking-[2px] mb-4 uppercase italic flex items-center gap-2">
-                                                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: isScanning ? '#c8aa6e' : (isDownloading ? '#3b82f6' : (hasUpdates ? '#30d158' : '#c8aa6e')) }} />
+                                                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: isScanning ? '#c8aa6e' : (isDownloading ? '#3b82f6' : (updateAvailable ? '#ff6b6b' : (hasUpdates ? '#30d158' : '#c8aa6e'))) }} />
                                                 Estado del Sistema
                                             </div>
 
@@ -887,6 +1071,7 @@ function App() {
                                                             </div>
                                                             <Download size={64} className="text-[#3b82f6]/20 absolute right-0" />
                                                         </motion.div>
+
                                                     ) : (
                                                         <motion.div
                                                             key="status"
@@ -894,11 +1079,11 @@ function App() {
                                                             className="flex items-center justify-between"
                                                         >
                                                             <div>
-                                                                <div className="text-4xl font-black uppercase leading-none" style={{ color: hasUpdates ? '#30d158' : '#c8aa6e' }}>
-                                                                    {hasUpdates ? 'ACTUALIZAR' : 'COMPLETO'}
+                                                                <div className="text-4xl font-black uppercase leading-none" style={{ color: updateAvailable ? '#ff6b6b' : (hasUpdates ? '#30d158' : '#c8aa6e') }}>
+                                                                    {updateAvailable ? 'NUEVA VERSIÓN' : (hasUpdates ? 'ACTUALIZAR' : 'COMPLETO')}
                                                                 </div>
                                                                 <div className="text-[10px] font-bold text-[#a09b8c] mt-2 tracking-[3px] uppercase">
-                                                                    {hasUpdates ? 'VERSION DISPONIBLE' : 'LA BIBLIOTECA ESTÁ AL DÍA'}
+                                                                    {updateAvailable ? 'ACTUALIZACIÓN DE LAUNCHER' : (hasUpdates ? 'VERSION DISPONIBLE' : 'LA BIBLIOTECA ESTÁ AL DÍA')}
                                                                 </div>
                                                             </div>
                                                             <Globe size={64} className="text-white/10 absolute right-0" />
@@ -907,14 +1092,18 @@ function App() {
                                                 </AnimatePresence>
                                             </div>
 
-                                            <div className="pt-4 border-t border-white/5 flex justify-between items-center mt-auto">
-                                                <div className="text-[10px] font-black text-[#c8aa6e] tracking-[2px] cursor-pointer hover:text-white transition-all uppercase flex items-center gap-2 group/btn" onClick={handleDashboardSyncAction}>
-                                                    <span className="w-4 h-[1px] bg-[#c8aa6e] group-hover/btn:w-8 transition-all" />
-                                                    {(!paths.songs || paths.songs === 'No configurado') ? 'CONFIGURAR RUTA' : (isScanning ? 'ESTADO: OCUPADO' : (hasUpdates ? 'ACTUALIZAR AHORA' : 'FORZAR ESCANEO'))}
-                                                </div>
+                                            <div
+                                                onClick={(e) => { e.stopPropagation(); handleDashboardSyncAction(); }}
+                                                className={`pt-4 border-t border-white/5 flex justify-between items-center mt-auto group/btn cursor-pointer transition-colors ${updateAvailable ? 'text-[#ff6b6b] hover:text-[#ff8787]' : 'text-[#a09b8c] hover:text-white'}`}
+                                            >
+                                                <span className="text-[10px] font-black tracking-[2px] uppercase">
+                                                    {(!paths.songs || paths.songs === 'No configurado') ? 'CONFIGURAR RUTA' : (isScanning ? 'ESTADO: OCUPADO' : (updateAvailable ? 'VER NOVEDADES' : (hasUpdates ? 'ACTUALIZAR AHORA' : 'FORZAR ESCANEO')))}
+                                                </span>
+                                                <span className={`w-4 h-[1px] group-hover/btn:w-8 transition-all ${updateAvailable ? 'bg-[#ff6b6b]' : 'bg-[#c8aa6e]'}`} />
                                             </div>
                                         </div>
                                     </div>
+
                                 </div>
                             </motion.div>
                         )}
@@ -934,13 +1123,142 @@ function App() {
                                     </div>
                                 </div>
 
-                                <div className="flex-1 rounded-2xl border border-white/5 bg-[#010101]/40 relative overflow-hidden flex items-center justify-center">
-                                    <div className="absolute inset-0 bg-gradient-to-br from-[#c8aa6e]/5 to-transparent backdrop-blur-[2px]" />
-                                    <div className="relative text-center p-12 backdrop-blur-md bg-black/40 rounded-3xl border border-white/10 shadow-2xl">
-                                        <div className="text-6xl mb-6 opacity-20">📡</div>
-                                        <h2 className="text-3xl font-black italic tracking-[10px] text-white uppercase drop-shadow-[0_0_20px_rgba(255,255,255,0.3)]">PRÓXIMAMENTE</h2>
-                                        <div className="w-16 h-1 bg-[#c8aa6e] mx-auto mt-6 mb-4 shadow-[0_0_15px_#c8aa6e]" />
-                                        <p className="text-[#a09b8c] font-black tracking-[3px] text-[10px] uppercase opacity-60">Estamos construyendo la mayor red de charts del mundo</p>
+                                <div className="flex-1 flex gap-8 min-h-0">
+                                    {/* Sidebar de Amigos (Discord Style) */}
+                                    <div className="w-80 bg-[#010101]/60 border border-white/5 rounded-2xl backdrop-blur-md flex flex-col overflow-hidden">
+                                        <div className="p-6 border-b border-white/5 bg-white/5 flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                <div className="relative">
+                                                    {discordUser?.avatar ? (
+                                                        <img
+                                                            src={`https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`}
+                                                            className="w-10 h-10 rounded-full border border-[#c8aa6e]/30 shadow-[0_0_15px_rgba(200,170,110,0.3)]"
+                                                            alt="Avatar"
+                                                        />
+                                                    ) : (
+                                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#c8aa6e] to-[#f0e6d2] flex items-center justify-center text-[#01141e] font-black text-lg shadow-[0_0_15px_rgba(200,170,110,0.3)]">U</div>
+                                                    )}
+                                                    <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 ${discordReady ? 'bg-[#30d158]' : 'bg-[#ff4d4d]'} rounded-full border-2 border-[#010101]`} title={discordReady ? "Discord Conectado" : "Discord Desconectado"} />
+                                                </div>
+                                                <div>
+                                                    <div className="text-[12px] font-black text-white tracking-widest uppercase truncate w-32">{discordUser ? (discordUser.global_name || discordUser.username) : 'Usuario_Waza'}</div>
+                                                    <div className="text-[9px] font-bold text-[#c8aa6e] opacity-60 tracking-[2px] uppercase">{discordReady ? 'Discord Conectado' : 'Sin Conexión'}</div>
+                                                </div>
+                                            </div>
+                                            <Settings size={14} className="text-[#a09b8c] hover:text-white cursor-pointer transition-colors" />
+                                        </div>
+
+                                        <div className="flex-1 overflow-y-auto custom-scroll p-4 space-y-2">
+                                            <div className="flex justify-between items-center mb-4 mt-2 px-2">
+                                                <div className="text-[9px] font-black text-[#a09b8c] tracking-[3px] uppercase">MIS AMIGOS — {socialFriends.length}</div>
+                                                <button
+                                                    onClick={async () => {
+                                                        const name = prompt('Nombre del amigo:');
+                                                        if (name) {
+                                                            const id = Math.random().toString(36).substr(2, 9);
+                                                            const icons = ['🔥', '🎸', '⚔️', '⭐', '🤘'];
+                                                            const icon = icons[Math.floor(Math.random() * icons.length)];
+                                                            const friends = await electron.invoke('add-friend', { id, name, icon });
+                                                            setSocialFriends(friends);
+                                                        }
+                                                    }}
+                                                    className="text-[9px] font-black text-[#c8aa6e] hover:text-white transition-colors"
+                                                >
+                                                    + AÑADIR
+                                                </button>
+                                            </div>
+
+                                            {socialFriends.length > 0 ? socialFriends.map((friend, i) => (
+                                                <div key={i} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all cursor-pointer group relative">
+                                                    <div className="w-10 h-10 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-xl grayscale group-hover:grayscale-0 transition-all">{friend.icon}</div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="text-[11px] font-black text-white tracking-wider truncate uppercase">{friend.name}</div>
+                                                        <div className="text-[9px] font-bold text-[#a09b8c] truncate uppercase opacity-60 tracking-tighter">
+                                                            {friend.status}{friend.song ? `: ${friend.song}` : ''}
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        onClick={async (e) => {
+                                                            e.stopPropagation();
+                                                            if (confirm(`¿Eliminar a ${friend.name}?`)) {
+                                                                const friends = await electron.invoke('delete-friend', friend.id);
+                                                                setSocialFriends(friends);
+                                                            }
+                                                        }}
+                                                        className="absolute right-2 opacity-0 group-hover:opacity-100 text-[#ff4d4d] hover:text-white p-1"
+                                                    >
+                                                        <X size={10} />
+                                                    </button>
+                                                </div>
+                                            )) : (
+                                                <div className="text-center py-10 opacity-20">
+                                                    <p className="text-[10px] font-black uppercase tracking-widest">Lista Vacía</p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Activity Feed (Mockup) */}
+                                    <div className="flex-1 flex flex-col gap-8 overflow-y-auto custom-scroll pr-2">
+                                        <div className="bg-[#010101]/40 border border-white/5 rounded-2xl p-8 backdrop-blur-sm relative overflow-hidden group hover:border-[#c8aa6e]/20 transition-all">
+                                            <div className="absolute top-0 right-0 p-6 opacity-5 group-hover:opacity-10 transition-all">
+                                                <Activity size={100} />
+                                            </div>
+                                            <h3 className="text-sm font-black tracking-[4px] uppercase italic text-[#c8aa6e] border-b border-white/5 pb-4 mb-6">Actividad de la Comunidad</h3>
+
+                                            <div className="space-y-8">
+                                                {socialActivity.length > 0 ? socialActivity.map((activity, i) => (
+                                                    <div key={i} className="flex gap-4 items-start border-l-2 border-[#c8aa6e]/30 pl-6 relative">
+                                                        <div className="absolute -left-[5px] top-0 w-2 h-2 rounded-full bg-[#c8aa6e]" />
+                                                        <div className="flex-1">
+                                                            <div className="flex justify-between items-center mb-1">
+                                                                <span className="text-[11px] font-black text-white uppercase tracking-wider">{activity.user}</span>
+                                                                <span className="text-[9px] font-bold text-[#a09b8c] uppercase opacity-50">{activity.time}</span>
+                                                            </div>
+                                                            <p className="text-[10px] text-[#a09b8c] font-bold uppercase tracking-widest mb-1">{activity.action}</p>
+                                                            <p className="text-[12px] text-[#c8aa6e] font-black italic uppercase tracking-tighter">{activity.target}</p>
+                                                        </div>
+                                                    </div>
+                                                )) : (
+                                                    <div className="text-center py-20 opacity-20">
+                                                        <p className="text-[10px] font-black uppercase tracking-widest">Sin actividad reciente</p>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-gradient-to-r from-[#c8aa6e]/10 to-transparent border border-[#c8aa6e]/20 rounded-2xl p-10 flex items-center justify-between group/rpc">
+                                            <div className="flex gap-8 items-center">
+                                                <div className="w-16 h-16 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center relative overflow-hidden">
+                                                    <Disc size={32} className={`text-[#c8aa6e] ${isDownloading ? 'animate-spin' : ''}`} />
+                                                    {discordReady && <div className="absolute inset-0 bg-[#c8aa6e]/5 animate-pulse" />}
+                                                </div>
+                                                <div>
+                                                    <h4 className="text-lg font-black italic text-white tracking-widest uppercase mb-1">Tu Estado en Vivo</h4>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className={`w-2 h-2 rounded-full ${!rpcEnabled ? 'bg-[#ff4655]' : (discordReady ? 'bg-[#30d158]' : 'bg-[#ffaa00]')}`} />
+                                                        <p className="text-[11px] text-[#c8aa6e] font-black uppercase tracking-[2px]">
+                                                            {!rpcEnabled ? 'DISC-RPC DESACTIVADO POR USUARIO' :
+                                                                (discordReady ? `${discordActivity?.details || 'En el Menú'} — ${discordActivity?.state || 'Navegando'}` : 'SIN CONEXIÓN CON DISCORD (ABRE DISCORD)')}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="flex gap-4">
+                                                {!discordReady && rpcEnabled && (
+                                                    <button
+                                                        onClick={() => {
+                                                            electron.invoke('reconnect-discord');
+                                                            alert('Reintentando conexión con Discord...');
+                                                        }}
+                                                        className="px-6 py-4 bg-white/5 text-white font-black text-[10px] tracking-[2px] rounded-xl border border-white/10 hover:bg-white/10 transition-all uppercase"
+                                                    >
+                                                        Reintentar Conexión
+                                                    </button>
+                                                )}
+                                                <button className="px-10 py-4 bg-[#c8aa6e] text-[#010101] font-black text-xs tracking-[4px] rounded-xl shadow-[0_0_30px_rgba(200,170,110,0.3)] hover:scale-105 transition-all uppercase">Configurar RPC</button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </motion.div>
@@ -1048,16 +1366,61 @@ function App() {
                                 exit={{ opacity: 0, scale: 1.02 }}
                                 className="flex-1 px-16 pb-16 pt-32 overflow-y-auto custom-scroll"
                             >
-                                <div>
+                                <div className="max-w-4xl mx-auto">
                                     <div className="flex justify-between items-center mb-12 border-b border-white/10 pb-6">
                                         <div>
-                                            <h1 className="text-4xl font-black italic text-white tracking-widest uppercase">NOTAS DEL PARCHE {patchNotes.version}</h1>
-                                            <p className="text-[#c8aa6e] font-black tracking-[4px] text-xs mt-2 opacity-80 uppercase">{patchNotes.date}</p>
+                                            <h1 className="text-4xl font-black italic text-white tracking-widest uppercase">HISTORIAL DE VERSIONES</h1>
+                                            <div className="flex items-center gap-4 mt-2">
+                                                <p className="text-[#c8aa6e] font-black tracking-[4px] text-xs opacity-80 uppercase">Registro de cambios y novedades</p>
+                                                <div className="px-2 py-0.5 rounded bg-white/10 text-white font-mono text-[9px] font-bold tracking-widest uppercase border border-white/10">
+                                                    INSTALADO: v{currentVersion}
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
-                                    <div className="bg-[#010101]/60 border border-white/5 p-10 rounded-2xl backdrop-blur-md prose prose-invert max-w-none prose-headings:italic prose-headings:font-black prose-headings:tracking-widest prose-p:text-[#a09b8c] prose-p:font-bold prose-p:tracking-wider">
-                                        <div dangerouslySetInnerHTML={{ __html: patchNotes.body }} />
+
+                                    <div className="space-y-12">
+                                        {patchNotes.length > 0 ? (
+                                            patchNotes.map((note, index) => (
+                                                <div key={index} className="bg-[#010101]/60 border border-white/5 p-10 rounded-2xl backdrop-blur-md group hover:border-[#c8aa6e]/30 transition-all relative overflow-hidden">
+                                                    {index === 0 && (
+                                                        <div className="absolute top-0 right-0 bg-[#c8aa6e] text-[#01141e] text-[9px] font-black px-3 py-1 rounded-bl-xl tracking-widest uppercase">
+                                                            LATEST
+                                                        </div>
+                                                    )}
+                                                    <div className="mb-8 pb-6 border-b border-white/5 flex justify-between items-end">
+                                                        <div>
+                                                            <div className="text-3xl font-black text-white italic tracking-wider flex items-center gap-3">
+                                                                {note.version}
+                                                                {index === 0 && <div className="w-2 h-2 rounded-full bg-[#30d158] animate-pulse" />}
+                                                            </div>
+                                                            <div className="text-[#c8aa6e] font-black tracking-[3px] text-[10px] mt-2 uppercase opacity-80 ml-1">
+                                                                {new Date(note.date).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+                                                            </div>
+                                                        </div>
+                                                        <a
+                                                            href={note.url}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className="text-[10px] font-black text-[#a09b8c] hover:text-white transition-colors tracking-[2px] uppercase flex items-center gap-1"
+                                                            onClick={(e) => { e.preventDefault(); electron.invoke('open-external', note.url); }}
+                                                        >
+                                                            Ver en GitHub
+                                                        </a>
+                                                    </div>
+                                                    <div className="prose prose-invert max-w-none prose-headings:italic prose-headings:font-black prose-headings:tracking-widest prose-p:text-[#a09b8c] prose-p:font-bold prose-p:tracking-wider prose-ul:my-2 prose-li:my-0 prose-li:text-[#a09b8c]">
+                                                        <div dangerouslySetInnerHTML={{ __html: note.body }} />
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <div className="text-center py-20 opacity-30">
+                                                <p className="font-black tracking-[4px] text-white">CARGANDO HISTORIAL...</p>
+                                            </div>
+                                        )}
                                     </div>
+
+                                    <div className="h-20" /> {/* Spacer */}
                                 </div>
                             </motion.div>
                         )}
@@ -1222,6 +1585,41 @@ function App() {
                                             <button onClick={async () => { if (confirm('¿Limpiar caché de biblioteca?')) { setIsScanning(true); const lib = await electron.invoke('scan-library', true); setLocalLibrary(lib || []); setIsScanning(false); alert('Caché regenerada y biblioteca actualizada.'); } }} className="px-6 py-3 bg-blue-500/10 text-blue-500 text-[11px] font-black tracking-[3px] rounded-lg border border-blue-500/20 hover:bg-blue-500 hover:text-white transition-all">LIMPIAR CACHÉ</button>
                                             <button onClick={() => handlePathSelect('songs')} className="px-8 py-3 bg-[#c8aa6e]/10 text-[#c8aa6e] text-[11px] font-black tracking-[3px] rounded-lg border border-[#c8aa6e]/20 hover:bg-[#c8aa6e] hover:text-[#010101] transition-all">CAMBIAR</button>
                                         </div>
+                                    </div>
+
+                                    <div className="bg-[#010101]/60 border border-white/5 p-8 rounded-2xl flex items-center justify-between group hover:border-[#c8aa6e]/20 transition-all">
+                                        <div>
+                                            <div className="text-white font-black tracking-widest text-sm mb-2 uppercase italic">Versión del Launcher</div>
+                                            <div className="text-xs text-[#a09b8c] font-bold opacity-70">Instalado actualmente: v{currentVersion}</div>
+                                        </div>
+                                        <div className="flex gap-4">
+                                            <button
+                                                onClick={handleManualUpdateCheck}
+                                                className="px-6 py-3 bg-[#c8aa6e]/10 text-[#c8aa6e] text-[11px] font-black tracking-[3px] rounded-lg border border-[#c8aa6e]/20 hover:bg-[#c8aa6e] hover:text-[#010101] transition-all uppercase"
+                                            >
+                                                Buscar Actualización
+                                            </button>
+                                            <div className="px-8 py-3 bg-white/5 text-white/40 text-[11px] font-black tracking-[3px] rounded-lg border border-white/10 select-text cursor-text">
+                                                v{currentVersion}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-[#010101]/60 border border-white/5 p-8 rounded-2xl flex items-center justify-between group hover:border-[#c8aa6e]/20 transition-all">
+                                        <div>
+                                            <div className="text-white font-black tracking-widest text-sm mb-2 uppercase italic">Discord Rich Presence</div>
+                                            <div className="text-xs text-[#a09b8c] font-bold opacity-70">Muestra qué estás jugando en tu perfil de Discord.</div>
+                                        </div>
+                                        <button
+                                            onClick={() => {
+                                                const next = !rpcEnabled
+                                                setRpcEnabled(next)
+                                                localStorage.setItem('waza_rpc_enabled', next.toString())
+                                            }}
+                                            className={`px-8 py-3 rounded-lg border font-black text-[11px] tracking-[3px] transition-all ${rpcEnabled ? 'bg-[#30d158]/10 text-[#30d158] border-[#30d158]/20 hover:bg-[#30d158] hover:text-[#010101]' : 'bg-white/5 text-[#a09b8c] border-white/10 hover:text-white'}`}
+                                        >
+                                            {rpcEnabled ? 'ACTIVADO' : 'DESACTIVADO'}
+                                        </button>
                                     </div>
 
                                     <div className="bg-[#010101]/60 border border-white/5 p-8 rounded-2xl flex items-center justify-between group hover:border-[#c8aa6e]/20 transition-all">

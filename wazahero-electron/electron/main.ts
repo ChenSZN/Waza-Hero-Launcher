@@ -1,10 +1,13 @@
-import { app, BrowserWindow, ipcMain, screen, protocol } from 'electron'
-import path from 'node:path'
+import { app, BrowserWindow, ipcMain, nativeTheme, protocol, screen } from 'electron'
+import path, { join } from 'node:path'
 import fs from 'node:fs'
 import { configService } from './services/configService'
 import { libraryService } from './services/libraryService'
 import { gameService } from './services/gameService'
 import { downloadService } from './services/downloadService'
+import { discordService } from './services/discordService'
+import { socialService } from './services/socialService'
+import { wazaLinkService } from './services/wazaLinkService'
 
 // The built directory structure
 //
@@ -122,6 +125,14 @@ function createWindow() {
             }
         }
     })
+
+    wazaLinkService.onActivity((activity) => {
+        if (win) {
+            win?.webContents.send('waza-link-event', activity)
+        }
+    })
+
+    wazaLinkService.connect()
 }
 
 // --- IPC Handlers ---
@@ -256,16 +267,95 @@ ipcMain.handle('get-backgrounds', async () => {
 
 ipcMain.handle('get-patch-notes', async () => {
     try {
-        const response = await fetch('https://api.github.com/repos/ChenSZN/Waza-Hero-Launcher/releases/latest')
+        const response = await fetch('https://api.github.com/repos/ChenSZN/Waza-Hero-Launcher/releases')
         const data = await response.json()
-        return {
-            version: data.tag_name,
-            body: data.body,
-            date: data.published_at
-        }
-    } catch {
-        return { version: 'v3.3.0', body: 'Error cargando notas desde GitHub.', date: '' }
+
+        if (!Array.isArray(data)) throw new Error('Invalid response')
+
+        return data.map((release: any) => ({
+            version: release.tag_name,
+            body: release.body,
+            date: release.published_at,
+            url: release.html_url,
+            commit: release.target_commitish
+        }))
+    } catch (e) {
+        console.error('[MAIN] Error fetching patch notes:', e)
+        return []
     }
+})
+
+ipcMain.handle('open-external', async (_e, url: string) => {
+    require('electron').shell.openExternal(url)
+})
+
+ipcMain.handle('set-discord-activity', async (_e, details: string, state?: string) => {
+    discordService.setActivity(details, state)
+})
+
+ipcMain.handle('is-discord-ready', async () => {
+    return (discordService as any).isReady
+})
+
+ipcMain.handle('get-discord-user', async () => {
+    return (discordService as any).userData
+})
+
+ipcMain.handle('get-discord-activity', async () => {
+    return (discordService as any).currentActivity
+})
+
+ipcMain.handle('reconnect-discord', async () => {
+    return discordService.reconnect()
+})
+
+ipcMain.handle('get-app-version', () => {
+    return app.getVersion()
+})
+
+ipcMain.handle('get-friends', async () => {
+    return socialService.getFriends()
+})
+
+ipcMain.handle('add-friend', async (_e, friend: any) => {
+    socialService.addFriend(friend)
+    return socialService.getFriends()
+})
+
+ipcMain.handle('delete-friend', async (_e, id: string) => {
+    socialService.removeFriend(id)
+    return socialService.getFriends()
+})
+
+ipcMain.handle('get-activity', async () => {
+    return socialService.getFormattedActivity()
+})
+
+ipcMain.handle('log-activity', async (_e, action: string, target: string, user?: string) => {
+    socialService.logActivity(action, target, user)
+    return socialService.getFormattedActivity()
+})
+
+// Initial Activity Log if empty
+if (socialService.getActivityLog().length === 0) {
+    socialService.logActivity('ha instalado', `Waza Hero Launcher v${app.getVersion()}`, 'Sistema')
+}
+
+ipcMain.handle('get-drive-version', async () => {
+    try {
+        const songsPath = configService.get('ruta_songs') as string
+        if (!songsPath || !fs.existsSync(songsPath)) return null
+
+        const versionFilePath = path.join(songsPath, 'version.json')
+        if (fs.existsSync(versionFilePath)) {
+            const content = fs.readFileSync(versionFilePath, 'utf-8')
+            const data = JSON.parse(content)
+            return data.version || null
+        }
+    } catch (e) {
+        console.error('[MAIN] Error reading drive version:', e)
+    }
+    return null
 })
 
 ipcMain.handle('get-game-stats', async () => {
