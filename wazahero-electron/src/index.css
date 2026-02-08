@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    :root {
+        --riot-gold: #c8aa6e;
+        --riot-gold-dark: #a09b8c;
+        --riot-bg: #010a13;
+        --riot-bg-dark: #010101;
+    }
+
+    * {
+        @apply border-white/5;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: auto;
+    }
+
+    input {
+        @apply select-text;
+    }
+
+    .drag {
+        -webkit-app-region: drag;
+    }
+
+    .no-drag {
+        -webkit-app-region: no-drag;
+    }
+
+    body {
+        @apply bg-[#010a13] text-[#f0e6d2] overflow-hidden select-none;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        font-feature-settings: "ss01", "ss02", "cv01", "cv02";
+    }
+
+    /* Custom Scrollbar */
+    .custom-scroll::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .custom-scroll::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+    }
+
+    .custom-scroll::-webkit-scrollbar-thumb {
+        background: rgba(200, 170, 110, 0.5);
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .custom-scroll::-webkit-scrollbar-thumb:hover {
+        background: rgba(200, 170, 110, 0.8);
+    }
+}
+
+@layer components {
+    .riot-glass {
+        @apply bg-[#010101]/60 backdrop-blur-xl border border-white/10;
+    }
+
+    .riot-button {
+        @apply border border-[#c8aa6e]/20 bg-[#c8aa6e]/5 text-[#c8aa6e] hover:bg-[#c8aa6e]/10 hover:border-[#c8aa6e]/50 transition-all font-bold tracking-[2px] text-[10px] uppercase;
+    }
+
+    .riot-button:active {
+        transform: scale(0.95);
+    }
+}
+
+/* Riot Client Animations */
+@keyframes glow {
+
+    0%,
+    100% {
+        opacity: 0.8;
+        filter: drop-shadow(0 0 5px #c8aa6e);
+    }
+
+    50% {
+        opacity: 1;
+        filter: drop-shadow(0 0 15px #c8aa6e);
+    }
+}
+
+/* Marquee animation for Dynamic Island */
+@keyframes marquee {
+    0% {
+        transform: translateX(0%);
+    }
+
+    100% {
+        transform: translateX(-50%);
+    }
+}
+
+.marquee {
+    display: inline-block;
+    white-space: nowrap;
+    animation: marquee 20s linear infinite;
+    padding-right: 40px;
+    will-change: transform;
+}
+
+.marquee-container {
+    overflow: hidden;
+    white-space: nowrap;
+    position: relative;
+    mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+    width: 100%;
+}
+
+.mask-linear-fade {
+    mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+}
+
+.mask-linear-fade {
+    mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+}
